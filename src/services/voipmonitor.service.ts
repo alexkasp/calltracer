@@ -17,6 +17,18 @@ export class VoipmonitorService {
     @Inject('REDIS_CLIENT') private readonly redis: Redis,
   ) {}
 
+  private safeJsonParse(value: any) {
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    if (!trimmed) return value;
+    if (!(trimmed.startsWith('{') || trimmed.startsWith('['))) return value;
+    try {
+      return JSON.parse(trimmed);
+    } catch {
+      return value;
+    }
+  }
+
   private pickDiagnosticFields(r: any) {
     // Оставляем только ключевые поля для диагностики (без HTML-полей вроде caller2/called2/menu и т.п.)
     return {
@@ -69,8 +81,9 @@ export class VoipmonitorService {
 
       // useful ids / links
       fbasename: r?.fbasename ?? r?.fbasename_orig,
-      allsiprequests: r?.allsiprequests,
-      allrtpstreams: r?.allrtpstreams,
+      // VoIPmonitor иногда возвращает эти поля как "JSON в строке" => распарсим, чтобы убрать экранирование
+      allsiprequests: this.safeJsonParse(r?.allsiprequests),
+      allrtpstreams: this.safeJsonParse(r?.allrtpstreams),
     };
   }
 
@@ -205,6 +218,8 @@ export class VoipmonitorService {
     fcallerd_type?: number;
     fcallid?: string;
     fbasename?: string;
+    fdurationgt?: number;
+    fdurationlt?: number;
   } = {}): Promise<any> {
     const {
       limit = 10,
@@ -216,6 +231,8 @@ export class VoipmonitorService {
       fcallerd_type,
       fcallid,
       fbasename,
+      fdurationgt,
+      fdurationlt,
     } = params;
 
     // VoIPmonitor API требует fdatefrom, иначе возвращает ошибку
@@ -259,6 +276,12 @@ export class VoipmonitorService {
     }
     if (fbasename) {
       queryParams.append('fbasename', fbasename);
+    }
+    if (fdurationgt !== undefined) {
+      queryParams.append('fdurationgt', fdurationgt.toString());
+    }
+    if (fdurationlt !== undefined) {
+      queryParams.append('fdurationlt', fdurationlt.toString());
     }
 
     const url = `${this.voipmonitorUrl}/php/model/sql.php?${queryParams.toString()}`;
