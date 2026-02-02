@@ -103,6 +103,88 @@ export class VoipmonitorService {
     };
   }
 
+  private safeToString(value: any): string {
+    if (value === undefined || value === null) return '';
+    if (typeof value === 'string') return value;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private stripHtmlTags(text: string): string {
+    if (!text) return '';
+    return text
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#039;/g, "'")
+      .replace(/\r/g, '')
+      .trim();
+  }
+
+  private simplifySipHistoryMsg(msg: string): string {
+    const cleaned = this.stripHtmlTags(msg);
+    if (!cleaned) return '';
+    // Remove trailing metadata like: " ... [ len: ..., CSeq: ... ]"
+    const idx = cleaned.indexOf('[');
+    if (idx > 0) return cleaned.slice(0, idx).trim();
+    return cleaned;
+  }
+
+  private formatSipHistoryBriefData(data: any): string {
+    const results: any[] = Array.isArray(data?.results) ? data.results : [];
+    if (!results.length) {
+      return this.safeToString(data);
+    }
+
+    // Baseline direction: use the first element's srcip/dstip (or first that has them)
+    const firstWithIps = results[0]?.srcip && results[0]?.dstip ? results[0] : results.find((r) => r?.srcip && r?.dstip);
+    const baseSrcip = firstWithIps?.srcip ? String(firstWithIps.srcip) : '';
+    const baseDstip = firstWithIps?.dstip ? String(firstWithIps.dstip) : '';
+
+    const lines: string[] = [];
+    if (baseSrcip || baseDstip) {
+      lines.push(`srcip: ${baseSrcip || 'N/A'} -> dstip: ${baseDstip || 'N/A'}`);
+      lines.push('');
+    }
+
+    for (const r of results) {
+      const msg = typeof r?.msg === 'string' ? r.msg : '';
+      const simplified = this.simplifySipHistoryMsg(msg);
+      if (!simplified) continue;
+
+      const ts = r?.time_timestamp ? String(r.time_timestamp) : '';
+      const srcip = r?.srcip ? String(r.srcip) : '';
+      const dstip = r?.dstip ? String(r.dstip) : '';
+
+      let arrow = '';
+      if (baseSrcip && baseDstip && srcip && dstip) {
+        if (srcip === baseSrcip && dstip === baseDstip) {
+          arrow = '===>';
+        } else if (srcip === baseDstip && dstip === baseSrcip) {
+          arrow = '<===';
+        } else {
+          arrow = '?';
+        }
+      }
+
+      const prefixParts = [ts, arrow].filter(Boolean);
+      const prefix = prefixParts.length ? `${prefixParts.join(' ')} ` : '';
+      lines.push(`${prefix}${simplified}`.trimEnd());
+    }
+
+    // If everything got filtered out (unlikely), fallback to JSON
+    const out = lines.join('\n').trim();
+    return out || this.safeToString(data);
+  }
+
   async getSessionId(): Promise<string> {
     // Для отладки/совместимости можно зафиксировать PHPSESSID через env,
     // чтобы поведение было идентично ручному curl.
@@ -138,6 +220,87 @@ export class VoipmonitorService {
 
     // Если нет в кэше, выполняем авторизацию
     return this.login();
+  }
+
+  async getSipHistoryBriefDataById(id: string | number): Promise<string> {
+    if (id === undefined || id === null || String(id).trim() === '') {
+      throw new BadRequestException('VoIPmonitor call id is required for SIP history');
+    }
+
+    let sessionId = await this.getSessionId();
+    const sessionIdStr = String(sessionId || '');
+
+    const url = `${this.voipmonitorUrl}/php/pcap2text.php?action=brief_data&id=${encodeURIComponent(String(id))}`;
+    const curlCommand = `curl -X POST --cookie "PHPSESSID=${sessionIdStr}" '${url}'`;
+
+    try {
+      this.logger.log('VoIPmonitor SIP history request (brief_data)', {
+        url,
+        curlCommand,
+        sessionId: sessionIdStr,
+        id: String(id),
+      });
+
+      const response = await firstValueFrom(
+        this.httpService.post(
+          url,
+          {},
+          {
+            headers: {
+              Accept: 'application/json, text/plain, text/html, */*',
+              Cookie: `PHPSESSID=${sessionIdStr}`,
+            },
+            // VoIPmonitor часто отдаёт JSON, но иногда может отдать текст/HTML — обработаем оба случая
+            responseType: 'json' as any,
+          },
+        ),
+      );
+
+      // Expected JSON example:
+      // { results:[...], total:10, errors:{}, success:true, _vm_version:... }
+      if (response?.data && typeof response.data === 'object') {
+        // Return human-readable SIP history text
+        return this.formatSipHistoryBriefData(response.data);
+      }
+
+      const body = this.safeToString(response?.data);
+      const snippet = body ? body.slice(0, 300) : '';
+      this.logger.warn('VoIPmonitor SIP history returned non-JSON body', {
+        url,
+        id: String(id),
+        snippet,
+      });
+
+      return body;
+    } catch (error) {
+      this.logger.error('Error fetching SIP history from VoIPmonitor (brief_data)', {
+        url,
+        curlCommand,
+        sessionId: sessionIdStr,
+        id: String(id),
+        error: {
+          message: error.message,
+          code: error.code,
+          response: {
+            status: error.response?.status,
+            statusText: error.response?.statusText,
+            data: error.response?.data,
+            headers: error.response?.headers,
+          },
+        },
+      });
+
+      // If auth error, clear cached session
+      if (error.response?.status === 401 || error.response?.status === 403) {
+        this.logger.warn('Session expired while fetching SIP history, clearing cache');
+        await this.redis.del(this.sessionKey);
+      }
+
+      throw new HttpException(
+        'Failed to fetch SIP history from VoIPmonitor',
+        error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
   }
 
   async login(): Promise<string> {

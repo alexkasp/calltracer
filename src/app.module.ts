@@ -8,6 +8,8 @@ import { CalltraceController } from './controllers/calltrace.controller';
 import { CalltraceService } from './services/calltrace.service';
 import { VoipmonitorController } from './controllers/voipmonitor.controller';
 import { VoipmonitorService } from './services/voipmonitor.service';
+import { SbctelcoController } from './controllers/sbctelco.controller';
+import { SbctelcoService } from './services/sbctelco.service';
 
 @Module({
   imports: [
@@ -17,11 +19,12 @@ import { VoipmonitorService } from './services/voipmonitor.service';
     }),
     HttpModule,
   ],
-  controllers: [AppController, CalltraceController, VoipmonitorController],
+  controllers: [AppController, CalltraceController, VoipmonitorController, SbctelcoController],
   providers: [
     AppService,
     CalltraceService,
     VoipmonitorService,
+    SbctelcoService,
     {
       provide: 'REDIS_CLIENT',
       useFactory: () => {
