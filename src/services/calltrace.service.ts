@@ -250,23 +250,21 @@ export class CalltraceService {
         let currentCallTime: string | null = null;
         let currentCallerA: string | null = null;
         let currentCalledB: string | null = null;
+        // Ожидающий блок для формата sip:number@domain (INVITE уже видели, ждём f: для номера A)
+        let pendingInviteSimple: { called: string; provider: string } | null = null;
+        // Флаг: после "Notify sending to LeadCM" перед следующим INVITE вывести "call to client"
+        let call2client = false;
+        let call2clientCapture = false;
+        // Для формата 2: следующая строка после "дата время Sent" или "Received:" идёт в вывод
+        let addNextLineAfterSentReceived = false;
 
-        const parseInviteParts = (sipUri: string): { provider?: string; callerA?: string; calledB?: string; tailId?: string } | null => {
-          if (!sipUri) return null;
-          const parts = sipUri.split('_').filter((p) => p.length > 0);
-          if (parts.length < 3) return null; // need at least provider + A + B
-
-          // Format: provider_A_B_callId
-          // parts[0] = provider
-          // parts[1] = A (caller)
-          // parts[2] = B (called)
-          // parts[3+] = callId (if exists, may contain underscores)
-          const provider = parts[0];
-          const callerA = parts[1];
-          const calledB = parts[2];
-          const tailId = parts.length > 3 ? parts.slice(3).join('_') : undefined;
-
-          return { provider, callerA, calledB, tailId };
+        const parseFromHeader = (line: string): string | null => {
+          if (!line.includes('f:')) return null;
+          const quoted = line.match(/f:\s*"([^"]+)"/);
+          if (quoted) return quoted[1];
+          const sipAngle = line.match(/<sip:([^@]+)@/);
+          if (sipAngle) return sipAngle[1];
+          return null;
         };
 
         const normalizeNumber = (n: string): string => {
@@ -277,57 +275,174 @@ export class CalltraceService {
           return out;
         };
 
+        // Разбор INVITE: формат 1 — sip:строка1_строка2_строка3_...@pbx... → A=строка2, B=строка3; формат 2 — sip:строка1@строка2 → B=строка1, домен=строка2, A из следующей строки f:
+        const parseInviteLine = (
+          userpart: string,
+          domain: string,
+        ): { format: 1; callerA: string; calledB: string; provider: string } | { format: 2; calledB: string; domain: string } | null => {
+          if (!userpart || !domain) return null;
+          const domainLower = domain.toLowerCase();
+          const hasUnderscore = userpart.includes('_');
+          if (hasUnderscore && domainLower.startsWith('pbx')) {
+            const parts = userpart.split('_').filter((p) => p.length > 0);
+            if (parts.length >= 3) {
+              return {
+                format: 1,
+                provider: parts[0],
+                callerA: parts[1],
+                calledB: parts[2],
+              };
+            }
+          }
+          return { format: 2, calledB: userpart, domain };
+        };
+
+        // Первый проход: связь sipCallId -> { callerA, calledB } из INVITE (только формат 1)
+        const inviteBySipCallId = new Map<string, { callerA: string; calledB: string }>();
+        let lastInviteNumbers: { callerA: string; calledB: string } | null = null;
+        const pendingSipCallIds: string[] = [];
+        for (const line of logLines) {
+          const inviteMatch = line.match(/INVITE sip:([^@\s]+)@([^\s]+)/);
+          if (inviteMatch) {
+            const userpart = inviteMatch[1];
+            const domain = inviteMatch[2];
+            const parsed = parseInviteLine(userpart, domain);
+            if (parsed?.format === 1) {
+              lastInviteNumbers = {
+                callerA: normalizeNumber(parsed.callerA),
+                calledB: normalizeNumber(parsed.calledB),
+              };
+              for (const id of pendingSipCallIds) {
+                inviteBySipCallId.set(id, lastInviteNumbers);
+              }
+              pendingSipCallIds.length = 0;
+            }
+          }
+          if (
+            line.includes('Sent event to JS onPhoneEvent with params') &&
+            (line.includes('name = Call.Failed') ||
+              line.includes('name = Call.Connected') ||
+              line.includes('name = Call.Disconnected'))
+          ) {
+            const sipCallIdMatch = line.match(/sipCallId\s*=\s*([^,;\]\s}]+)/);
+            if (sipCallIdMatch) {
+              pendingSipCallIds.push(sipCallIdMatch[1]);
+            }
+          }
+        }
+        // Связываем оставшиеся sipCallId с последним INVITE
+        if (lastInviteNumbers) {
+          for (const id of pendingSipCallIds) {
+            inviteBySipCallId.set(id, lastInviteNumbers);
+          }
+        }
+
         for (const line of logLines) {
           const trimmed = line.trim();
 
-          // Встречаем новый INVITE — начинаем/перезапускаем накопление
-          if (trimmed.startsWith('INVITE sip:')) {
-            // Упрощаем INVITE строку для лучшей читаемости
-            const inviteLineMatch = line.match(/INVITE sip:([^@]+)@([^\s]+)/);
-            if (inviteLineMatch) {
-              const sipUri = inviteLineMatch[1];
-              const domain = inviteLineMatch[2];
-              const parsed = parseInviteParts(sipUri);
-              if (parsed?.callerA && parsed?.calledB) {
-                out.push(`--- NEW CALL INVITE ---`);
-                out.push(`  From: ${parsed.callerA} -> To: ${parsed.calledB}`);
-                out.push(`  Domain: ${domain}`);
-                if (parsed.provider) out.push(`  Provider: ${parsed.provider}`);
-                out.push(`---`);
-              } else {
-                out.push(`--- NEW CALL INVITE: ${sipUri}@${domain} ---`);
-              }
-            } else {
-              // Убираем \r и оставляем как есть если не удалось распарсить
+          if (line.includes('Notify sending to LeadCM')) {
+            call2client = true;
+            call2clientCapture = true;
+          }
+
+          // Строки с "Terminating request" и "VoxEngine.terminate" — добавляем в вывод
+          if (line.includes('Terminating request') && line.includes('VoxEngine.terminate')) {
+            out.push(line.replace(/\r/g, ''));
+          }
+
+          // Для формата 2: следующая строка после "дата время Sent" или "Received:" — добавляем в вывод
+          if (addNextLineAfterSentReceived) {
+            out.push(line.replace(/\r/g, ''));
+            addNextLineAfterSentReceived = false;
+            continue;
+          }
+
+          // Для формата 2: до name = Call.Connected/Failed сохраняем строки "дата время Sent" или "Received:" и следующую за ними
+          if (call2clientCapture) {
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent|Received:)\s*$/.test(trimmed)) {
               out.push(line.replace(/\r/g, ''));
+              addNextLineAfterSentReceived = true;
+              continue;
+            }
+          if(line.includes('name = Call.Connected') || line.includes('name = Call.Disconnected'))
+            {
+              call2clientCapture = false;
+            }
+          }
+
+          // Начало SIP TRACE блока — выводим ожидающий блок без From (если есть), затем включаем захват
+          if (trimmed.includes('-----BEGIN SIP TRACE')) {
+            if (pendingInviteSimple) {
+              if (call2client) {
+                out.push(`--- call to client ---`);
+                call2client = false;
+              }
+              out.push(`--- NEW CALL INVITE ---`);
+              out.push(`  Called: ${pendingInviteSimple.called}`);
+              out.push(`  Provider: ${pendingInviteSimple.provider}`);
+              out.push(`---`);
+              pendingInviteSimple = null;
             }
             capture = true;
             foundInviteInLog = true;
-            
-            // Извлекаем время из строки (формат: YYYY-MM-DD HH:mm:ss.SSS)
+            continue;
+          }
+
+          // В блоке SIP TRACE — строка f: (From): номер A только для формата 2 (sip:строка1@строка2), не перезаписывать A из формата 1
+          if (capture) {
+            const fromNumber = parseFromHeader(line);
+            if (fromNumber != null && pendingInviteSimple) {
+              currentCallerA = normalizeNumber(fromNumber);
+              if (call2client) {
+                out.push(`--- call to client ---`);
+                call2client = false;
+              }
+              out.push(`--- NEW CALL INVITE ---`);
+              out.push(`  From: ${currentCallerA} -> To: ${pendingInviteSimple.called}`);
+              out.push(`  Provider: ${pendingInviteSimple.provider}`);
+              out.push(`---`);
+              pendingInviteSimple = null;
+              continue;
+            }
+          }
+
+          // В блоке SIP TRACE — строка "Sent:" не выводим
+          if (capture && trimmed.includes('Sent:')) {
+            continue;
+          }
+
+          // Встречаем INVITE sip: — формат 1 (строка1_строка2_строка3_...@pbx...) или формат 2 (строка1@строка2, A из следующей строки f:)
+          const inviteMatch = line.match(/INVITE sip:([^@\s]+)@([^\s]+)/);
+          if (inviteMatch) {
+            const userpart = inviteMatch[1];
+            const domain = inviteMatch[2];
+            const parsed = parseInviteLine(userpart, domain);
+            if (parsed?.format === 1) {
+              pendingInviteSimple = null; // A уже из INVITE; не перезаписывать из последующей строки f:
+              if (call2client) {
+                out.push(`--- call to client ---`);
+                call2client = false;
+              }
+              out.push(`--- NEW CALL INVITE ---`);
+              out.push(`  From: ${parsed.callerA} -> To: ${parsed.calledB}`);
+              out.push(`  Domain: ${domain}`);
+              out.push(`  Provider: ${parsed.provider}`);
+              out.push(`---`);
+              currentCallerA = normalizeNumber(parsed.callerA);
+              currentCalledB = normalizeNumber(parsed.calledB);
+            } else if (parsed?.format === 2) {
+              // Формат sip:строка1@строка2 — B=строка1, домен=строка2, A из следующей строки f:
+              pendingInviteSimple = { called: parsed.calledB, provider: parsed.domain };
+              currentCalledB = normalizeNumber(parsed.calledB);
+            }
+            capture = true;
+            foundInviteInLog = true;
+
             const timeMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
             if (timeMatch) {
               currentCallTime = timeMatch[1];
             }
-            
-            // Извлекаем номера A/B из INVITE sip:{provider_with_underscores}_{A}_{B}@domain
-            // provider может быть любым (не привязываемся к thr/sip4you)
-            const inviteLineMatch2 = line.match(/INVITE sip:([^@]+)@/);
-            const sipUri2 = inviteLineMatch2 ? inviteLineMatch2[1] : '';
-            const parsed2 = parseInviteParts(sipUri2);
-            if (parsed2?.callerA && parsed2?.calledB) {
-              currentCallerA = normalizeNumber(parsed2.callerA);
-              currentCalledB = normalizeNumber(parsed2.calledB);
 
-              this.logger.debug('Extracted call numbers from INVITE', {
-                originalA: parsed2.callerA,
-                originalB: parsed2.calledB,
-                callerA: currentCallerA,
-                calledB: currentCalledB,
-                callTime: currentCallTime,
-              });
-            }
-            
             continue;
           }
 
@@ -445,13 +560,16 @@ export class CalltraceService {
               
               // Вставляем результат в лог в структурированном формате
               if (vmCall) {
+                const displayNumbers = failedSipCallId ? inviteBySipCallId.get(failedSipCallId) : null;
+                const displayCaller = (displayNumbers?.callerA ?? (currentCallerA && currentCalledB ? currentCallerA : null)) ?? (vmCall.caller || 'N/A');
+                const displayCalled = (displayNumbers?.calledB ?? (currentCallerA && currentCalledB ? currentCalledB : null)) ?? (vmCall.called || 'N/A');
                 const searchInfo = failedSipCallId 
                   ? `sipCallId: ${failedSipCallId}` 
                   : `caller: ${currentCallerA}, called: ${currentCalledB}`;
                 out.push(`--- VOIPMONITOR Call.Failed [${searchInfo}] ---`);
                 out.push(`  ID: ${vmCall.ID || 'N/A'}`);
                 out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-                out.push(`  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`);
+                out.push(`  Caller: ${displayCaller} -> Called: ${displayCalled}`);
                 out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
                 out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
                 if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
@@ -523,7 +641,7 @@ export class CalltraceService {
                       out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
                       out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
                       out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
-                      out.push(`  Caller: ${abVmCall.caller || 'N/A'} -> Called: ${abVmCall.called || 'N/A'}`);
+                      out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
                       out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
                       out.push(`  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`);
                       if (abVmCall.lost || abVmCall.jitter || abVmCall.mos_min) {
@@ -624,10 +742,13 @@ export class CalltraceService {
 
                 // Вставляем в общий лог сразу после Call.Connected в структурированном формате
                 if (vmCall) {
+                  const displayNumbersConnected = inviteBySipCallId.get(connectedSipCallId);
+                  const displayCallerConnected = (displayNumbersConnected?.callerA ?? (currentCallerA && currentCalledB ? currentCallerA : null)) ?? (vmCall.caller || 'N/A');
+                  const displayCalledConnected = (displayNumbersConnected?.calledB ?? (currentCallerA && currentCalledB ? currentCalledB : null)) ?? (vmCall.called || 'N/A');
                   out.push(`--- VOIPMONITOR Call.Connected [sipCallId: ${connectedSipCallId}] ---`);
                   out.push(`  ID: ${vmCall.ID || 'N/A'}`);
                   out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-                  out.push(`  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`);
+                  out.push(`  Caller: ${displayCallerConnected} -> Called: ${displayCalledConnected}`);
                   out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
                   out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
                   if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
@@ -715,7 +836,7 @@ export class CalltraceService {
                         out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
                         out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
                         out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
-                        out.push(`  Caller: ${abVmCall.caller || 'N/A'} -> Called: ${abVmCall.called || 'N/A'}`);
+                        out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
                         out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
                         out.push(`  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`);
                         if (abVmCall.lost || abVmCall.jitter || abVmCall.mos_min) {
@@ -776,6 +897,17 @@ export class CalltraceService {
               }
             }
           }
+        }
+
+        if (pendingInviteSimple) {
+          if (call2client) {
+            out.push(`--- call to client ---`);
+            call2client = false;
+          }
+          out.push(`--- NEW CALL INVITE ---`);
+          out.push(`  Called: ${pendingInviteSimple.called}`);
+          out.push(`  Provider: ${pendingInviteSimple.provider}`);
+          out.push(`---`);
         }
 
         if (foundInviteInLog && out.length > 0) {
