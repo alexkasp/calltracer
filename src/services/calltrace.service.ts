@@ -81,50 +81,45 @@ export class CalltraceService {
   }
 
   private async formatLog(callType: string, callId: string, data: any): Promise<any> {
-    // По умолчанию возвращаем данные как есть
     switch (callType) {
       case 'S2L':
-        // Можно добавить специфичное форматирование для S2L
-        return this.formatS2LLog(callId, data);
       case 'dialer':
-        // Можно добавить специфичное форматирование для dialer
-        return this.formatDialerLog(data);
+        // Один и тот же обработчик (events + log с VoIPmonitor, sbctelco, INVITE и т.д.); callType сохраняем для доработок под тип
+        const result = await this.formatS2LLog(callId, data);
+        return result && typeof result === 'object' ? { ...result, callType } : result;
       default:
-        // По умолчанию возвращаем как есть
         return data;
     }
   }
 
   private async formatS2LLog(callId: string, data: any): Promise<any> {
-    // Для S2L извлекаем только секцию events до "\n\n log"
+    // Для S2L: debug.log или log; для дайлера (ipmaxi API): pbxLog
     try {
-      const logText = data?.debug?.log || data?.log || '';
+      const logText = data?.debug?.log || data?.log || data?.pbxLog || '';
       
       if (!logText) {
         this.logger.warn('No log text found in S2L response');
         return data;
       }
 
-      // Ищем начало секции events
+      // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом)
       const eventsIndex = logText.indexOf('events:');
-      if (eventsIndex === -1) {
-        this.logger.warn('No events section found in S2L log');
-        return data;
-      }
+      const hasEventsSection = eventsIndex !== -1;
+      const logSectionIndex = hasEventsSection ? logText.indexOf('\n\n log', eventsIndex) : -1;
 
-      // Ищем конец секции events (начало секции log)
-      const logSectionIndex = logText.indexOf('\n\n log', eventsIndex);
-      
       let eventsSection: string;
       let logSection: string | null = null;
-      if (logSectionIndex !== -1) {
-        // Извлекаем секцию events до "\n\n log"
-        eventsSection = logText.substring(eventsIndex, logSectionIndex);
-        // Секция log начинается с "\n\n log" и идет до конца
-        logSection = logText.substring(logSectionIndex);
+      if (hasEventsSection) {
+        if (logSectionIndex !== -1) {
+          eventsSection = logText.substring(eventsIndex, logSectionIndex);
+          logSection = logText.substring(logSectionIndex);
+        } else {
+          eventsSection = logText.substring(eventsIndex);
+        }
       } else {
-        // Если секция log не найдена, берем всё от events до конца
-        eventsSection = logText.substring(eventsIndex);
+        // Нет секции events (например, дайлер pbxLog) — весь текст как секция log
+        eventsSection = '';
+        logSection = logText;
       }
 
       // Убираем из секции events строки, в которых есть "null -> null"
@@ -250,6 +245,10 @@ export class CalltraceService {
         let currentCallTime: string | null = null;
         let currentCallerA: string | null = null;
         let currentCalledB: string | null = null;
+        // agentNumber из callParams/resultCallGroups
+        const agentNumbersFull = new Set<string>();
+        // индекс: последние 6 цифр -> полный agentNumber (первое найденное)
+        const agentByLast6 = new Map<string, string>();
         // Ожидающий блок для формата sip:number@domain (INVITE уже видели, ждём f: для номера A)
         let pendingInviteSimple: { called: string; provider: string } | null = null;
         // Флаг: после "Notify sending to LeadCM" перед следующим INVITE вывести "call to client"
@@ -273,6 +272,18 @@ export class CalltraceService {
           // If number starts with 971, replace with 0
           if (out.startsWith('971')) out = '0' + out.substring(3);
           return out;
+        };
+
+        // Если To совпадает с agentNumber по последним 6 цифрам — выводим полный agentNumber
+        const expandToIfAgent = (to: string): string => {
+          if (!to) return to;
+          const digits = to.replace(/\D/g, '');
+          if (digits.length >= 6) {
+            const last6 = digits.slice(-6);
+            const full = agentByLast6.get(last6);
+            if (full) return full;
+          }
+          return to;
         };
 
         // Разбор INVITE: формат 1 — sip:строка1_строка2_строка3_...@pbx... → A=строка2, B=строка3; формат 2 — sip:строка1@строка2 → B=строка1, домен=строка2, A из следующей строки f:
@@ -343,6 +354,7 @@ export class CalltraceService {
           if (line.includes('Notify sending to LeadCM')) {
             call2client = true;
             call2clientCapture = true;
+            out.push('try to call to lead');
           }
 
           // Строки с "Terminating request" и "VoxEngine.terminate" — добавляем в вывод
@@ -350,16 +362,82 @@ export class CalltraceService {
             out.push(line.replace(/\r/g, ''));
           }
 
-          // Для формата 2: следующая строка после "дата время Sent" или "Received:" — добавляем в вывод
+          // Строки с "[DEBUG] callFailed" — добавляем в вывод
+          if (line.includes('[DEBUG] callFailed')) {
+            out.push(line.replace(/\r/g, ''));
+          }
+
+          // Строки с "Sent event to JS VoxEngine.customData with params" — добавляем в вывод
+          if (line.includes('Sent event to JS VoxEngine.customData with params')) {
+            const raw = line.replace(/\r/g, '');
+
+            // Извлекаем leadPhone и leadProvider (страна + первый провайдер) и выводим только их
+            // Пример в логе:
+            // [{"leadPhone":"41793337853","leadProvider":["Switzerland",[["didlogic","41523999999"], ... ]]]
+            const phoneMatch = raw.match(/"leadPhone"\s*:\s*"([^"]+)"/);
+            const providerMatch = raw.match(
+              /"leadProvider"\s*:\s*\[\s*"([^"]+)"\s*,\s*\[\s*\[\s*"([^"]+)"\s*,\s*"([^"]+)"\s*\]/,
+            );
+
+            if (phoneMatch && providerMatch) {
+              const leadPhone = phoneMatch[1];
+              const country = providerMatch[1];
+              const providerName = providerMatch[2];
+              const providerNumber = providerMatch[3];
+              out.push(
+                `callParams: leadPhone ${leadPhone}, leadProvider:["${country}",[["${providerName}","${providerNumber}"]`,
+              );
+            }
+
+            // resultCallGroups: вытаскиваем список агентов (agentNumber + agentName)
+            // Пример:
+            // "resultCallGroups":[[[24916,"971505721141",0,"Zemfira Agabekova","zemfira@..."]], ...]
+            const agents: Array<{ number: string; name: string }> = [];
+            const agentRe = /\[\s*\[\s*\d+\s*,\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"/g;
+            let m: RegExpExecArray | null;
+            while ((m = agentRe.exec(raw)) !== null) {
+              agents.push({ number: m[1], name: m[2] });
+            }
+            if (agents.length > 0) {
+              const seen = new Set<string>();
+              for (const a of agents) {
+                const fullDigits = a.number?.replace(/\D/g, '');
+                if (fullDigits) {
+                  agentNumbersFull.add(fullDigits);
+                  if (fullDigits.length >= 6) {
+                    const last6 = fullDigits.slice(-6);
+                    if (!agentByLast6.has(last6)) agentByLast6.set(last6, fullDigits);
+                  }
+                }
+                const key = `${a.number}::${a.name}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push(`agentNumber ${a.number} agentName ${a.name}`);
+              }
+              continue;
+            }
+
+            // fallback: просто переименуем префикс
+            if (!(phoneMatch && providerMatch)) {
+              out.push(
+                raw.replace(
+                  'Sent event to JS VoxEngine.customData with params',
+                  'callParams:',
+                ),
+              );
+            }
+          }
+
+          // Следующая строка после "дата время Sent:" или "Received:" — добавляем в вывод; если это INVITE — не continue, чтобы ниже разобрать и вывести блок
           if (addNextLineAfterSentReceived) {
             out.push(line.replace(/\r/g, ''));
             addNextLineAfterSentReceived = false;
-            continue;
+            if (!/INVITE sip:([^@\s]+)@([^\s]+)/.test(line)) continue;
           }
 
-          // Для формата 2: до name = Call.Connected/Failed сохраняем строки "дата время Sent" или "Received:" и следующую за ними
+          // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними (регулярка с Sent: и Received:)
           if (call2clientCapture) {
-          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent|Received:)\s*$/.test(trimmed)) {
+          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
               out.push(line.replace(/\r/g, ''));
               addNextLineAfterSentReceived = true;
               continue;
@@ -397,8 +475,9 @@ export class CalltraceService {
                 out.push(`--- call to client ---`);
                 call2client = false;
               }
+              const displayTo = expandToIfAgent(pendingInviteSimple.called);
               out.push(`--- NEW CALL INVITE ---`);
-              out.push(`  From: ${currentCallerA} -> To: ${pendingInviteSimple.called}`);
+              out.push(`  From: ${currentCallerA} -> To: ${displayTo}`);
               out.push(`  Provider: ${pendingInviteSimple.provider}`);
               out.push(`---`);
               pendingInviteSimple = null;
@@ -423,8 +502,9 @@ export class CalltraceService {
                 out.push(`--- call to client ---`);
                 call2client = false;
               }
+              const displayTo = expandToIfAgent(parsed.calledB);
               out.push(`--- NEW CALL INVITE ---`);
-              out.push(`  From: ${parsed.callerA} -> To: ${parsed.calledB}`);
+              out.push(`  From: ${parsed.callerA} -> To: ${displayTo}`);
               out.push(`  Domain: ${domain}`);
               out.push(`  Provider: ${parsed.provider}`);
               out.push(`---`);
@@ -531,7 +611,7 @@ export class CalltraceService {
                         await appendSbctelcoTrace(currentCallerA, currentCalledB);
                       } else {
                         // Звонок не найден - добавляем предупреждение с URL
-                        out.push(`--- VOIPMONITOR Call.Failed [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`);
+                        out.push(`--- Call not found in VoIPmonitor ---`);
                         out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
                         out.push(`   Search URL: ${searchUrl}`);
                         out.push(`   Parameters: fdatefrom=${fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`);
@@ -690,7 +770,7 @@ export class CalltraceService {
                 const searchInfo = failedSipCallId 
                   ? `sipCallId: ${failedSipCallId}` 
                   : `caller: ${currentCallerA}, called: ${currentCalledB}`;
-                out.push(`--- VOIPMONITOR Call.Failed [${searchInfo}] --- NOT FOUND ---`);
+                out.push(`--- Call not found in VoIPmonitor ---`);
               }
             }
 
@@ -934,12 +1014,6 @@ export class CalltraceService {
       // В случае ошибки возвращаем исходные данные
       return data;
     }
-  }
-
-  private formatDialerLog(data: any): any {
-    // По умолчанию для dialer возвращаем данные как есть
-    // Здесь можно добавить специфичное форматирование при необходимости
-    return data;
   }
 
   private getApiUrl(callId: string): string {
