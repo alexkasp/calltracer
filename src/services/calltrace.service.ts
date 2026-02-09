@@ -197,11 +197,16 @@ export class CalltraceService {
           }
         };
 
+        // Чтобы не выводить один и тот же SIP HISTORY дважды (например Call.Connected и Additional Search с тем же ID)
+        const appendedSipHistoryIds = new Set<string>();
         const appendSipHistory = async (vmCall: any, header: string) => {
           const id = vmCall?.ID;
           if (!id) return;
 
           const idStr = String(id);
+          if (appendedSipHistoryIds.has(idStr)) return;
+          appendedSipHistoryIds.add(idStr);
+
           const cacheKey = `sip_history_${idStr}`;
 
           let cached = sipHistoryCache.get(cacheKey);
@@ -288,7 +293,7 @@ export class CalltraceService {
           return to;
         };
 
-        // Разбор INVITE: формат 1 — sip:строка1_строка2_строка3_...@pbx... → A=строка2, B=строка3; формат 2 — sip:строка1@строка2 → B=строка1, домен=строка2, A из следующей строки f:
+        // Разбор INVITE: формат 1a — sip:callerA_calledB_callId@...pbx... (третий фрагмент — hex id); формат 1b — sip:provider_callerA_calledB_...@pbx...; формат 2 — sip:userpart@domain
         const parseInviteLine = (
           userpart: string,
           domain: string,
@@ -296,9 +301,20 @@ export class CalltraceService {
           if (!userpart || !domain) return null;
           const domainLower = domain.toLowerCase();
           const hasUnderscore = userpart.includes('_');
-          if (hasUnderscore && domainLower.startsWith('pbx')) {
+          const domainHasPbx = domainLower.includes('pbx');
+          if (hasUnderscore && domainHasPbx) {
             const parts = userpart.split('_').filter((p) => p.length > 0);
             if (parts.length >= 3) {
+              // Третий фрагмент — hex id (например 4c2f37fe78e7901bc33f75c6beb93424) → callerA_calledB_callId
+              const thirdIsHexId = /^[a-f0-9]{20,}$/i.test(parts[2]);
+              if (thirdIsHexId) {
+                return {
+                  format: 1,
+                  provider: parts[0],
+                  callerA: parts[0],
+                  calledB: parts[1],
+                };
+              }
               return {
                 format: 1,
                 provider: parts[0],
