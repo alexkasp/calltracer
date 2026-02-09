@@ -254,6 +254,8 @@ export class CalltraceService {
         // Флаг: после "Notify sending to LeadCM" перед следующим INVITE вывести "call to client"
         let call2client = false;
         let call2clientCapture = false;
+        // Флаг: видели "Notify sending to LeadCM"; сбрасывается после обнаружения INVITE в блоке Sent/Received
+        let informLeadCall = false;
         // Для формата 2: следующая строка после "дата время Sent" или "Received:" идёт в вывод
         let addNextLineAfterSentReceived = false;
 
@@ -354,7 +356,8 @@ export class CalltraceService {
           if (line.includes('Notify sending to LeadCM')) {
             call2client = true;
             call2clientCapture = true;
-            out.push('try to call to lead');
+            informLeadCall = true;
+            continue;
           }
 
           // Строки с "Terminating request" и "VoxEngine.terminate" — добавляем в вывод
@@ -428,22 +431,27 @@ export class CalltraceService {
             }
           }
 
-          // Следующая строка после "дата время Sent:" или "Received:" — добавляем в вывод; если это INVITE — не continue, чтобы ниже разобрать и вывести блок
+          // Следующая строка после "дата время Sent:" или "Received:" — добавляем в вывод; если это INVITE — выводим TRY TO CALL LEAD и сбрасываем informLeadCall
           if (addNextLineAfterSentReceived) {
+            const isInviteLine = /INVITE sip:([^@\s]+)@([^\s]+)/.test(line);
+            if (isInviteLine && informLeadCall) {
+              out.push('TRY TO CALL LEAD');
+              informLeadCall = false;
+            }
             out.push(line.replace(/\r/g, ''));
             addNextLineAfterSentReceived = false;
-            if (!/INVITE sip:([^@\s]+)@([^\s]+)/.test(line)) continue;
+             if(!isInviteLine)
+               continue;
           }
 
-          // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними (регулярка с Sent: и Received:)
+          // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними только если уже видели Notify (informLeadCall)
           if (call2clientCapture) {
-          if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
+            if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
               out.push(line.replace(/\r/g, ''));
               addNextLineAfterSentReceived = true;
               continue;
             }
-          if(line.includes('name = Call.Connected') || line.includes('name = Call.Disconnected'))
-            {
+            if (line.includes('name = Call.Connected') || line.includes('name = Call.Disconnected')) {
               call2clientCapture = false;
             }
           }
@@ -472,7 +480,6 @@ export class CalltraceService {
             if (fromNumber != null && pendingInviteSimple) {
               currentCallerA = normalizeNumber(fromNumber);
               if (call2client) {
-                out.push(`--- call to client ---`);
                 call2client = false;
               }
               const displayTo = expandToIfAgent(pendingInviteSimple.called);
