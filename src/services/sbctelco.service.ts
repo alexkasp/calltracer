@@ -10,8 +10,12 @@ type SbctelcoCallTraceParams = {
   called?: string;
   calling?: string;
   recursive?: string; // yes/no
+  /** SIP Call-ID — поиск звонка по call_id (например из VoIPmonitor) */
+  call_id?: string;
   /** DateTime в формате YYYY-MM-DD HH:MM:SS — фильтр звонков после этого времени */
   start?: string;
+  /** DateTime в формате YYYY-MM-DD HH:MM:SS — фильтр звонков до этого времени (рекомендуется задавать) */
+  end?: string;
 };
 
 /** Лимит звонков для запросов по крону и fetch-and-save */
@@ -34,14 +38,16 @@ export class SbctelcoService {
   ) {}
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
-    const { nb_result = 2, called, calling, recursive = 'yes', start } = params || {};
+    const { nb_result = 2, called, calling, recursive = 'yes', call_id, start, end } = params || {};
 
     const qs = new URLSearchParams();
     qs.set('nb_result', String(nb_result));
     if (called) qs.set('called', called);
     if (calling) qs.set('calling', calling);
     if (recursive) qs.set('recursive', recursive);
+    if (call_id) qs.set('call_id', call_id);
     if (start) qs.set('start', start);
+    if (end) qs.set('end', end);
 
     const url = `${this.baseUrl}/call_trace?${qs.toString()}`;
     const curlCommand = `curl -X GET "${url}" -u ${this.username}:*** -H "Content-Type: application/json"`;
@@ -54,7 +60,9 @@ export class SbctelcoService {
         called,
         calling,
         recursive,
+        call_id,
         start,
+        end,
       });
 
       const response = await firstValueFrom(
@@ -121,6 +129,18 @@ export class SbctelcoService {
   /** Параметр start для запроса «звонки за последние 2 минуты» в UTC+4 */
   getStartParamLastTwoMinutes(): string {
     return this.formatStartParamUtc4(new Date(Date.now() - 2 * 60 * 1000));
+  }
+
+  /**
+   * Для времени звонка из лога возвращает start (минус 5 мин) и end (плюс 1 мин) в UTC+4 для API SBCtelco.
+   * callTime — строка даты/времени (например "2026-02-09 08:29:07.319" или "2026-01-26 09:42:41").
+   */
+  getStartEndForCallTime(callTime: string): { start: string; end: string } | null {
+    const d = new Date(callTime.trim());
+    if (Number.isNaN(d.getTime())) return null;
+    const start = this.formatStartParamUtc4(new Date(d.getTime() - 5 * 60 * 1000));
+    const end = this.formatStartParamUtc4(new Date(d.getTime() + 1 * 60 * 1000));
+    return { start, end };
   }
 
   /**

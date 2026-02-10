@@ -158,9 +158,12 @@ export class CalltraceService {
           return `${text.slice(0, maxChars)}\n... [truncated ${text.length - maxChars} chars] ...`;
         };
 
-        const appendSbctelcoTrace = async (calling: string, called: string) => {
+        const appendSbctelcoTrace = async (calling: string, called: string, callTime?: string | null) => {
           if (!calling || !called) return;
-          const cacheKey = `sbctelco_${calling}_${called}`;
+          const timeRange = callTime ? this.sbctelcoService.getStartEndForCallTime(callTime) : null;
+          const cacheKey = timeRange
+            ? `sbctelco_${calling}_${called}_${timeRange.start}_${timeRange.end}`
+            : `sbctelco_${calling}_${called}`;
 
           let cached = sbctelcoCache.get(cacheKey);
           if (cached === undefined) {
@@ -170,6 +173,7 @@ export class CalltraceService {
                 calling,
                 called,
                 recursive: 'yes',
+                ...(timeRange && { start: timeRange.start, end: timeRange.end }),
               });
               const text = this.sbctelcoService.formatCallTraceText(raw);
               cached = truncateText(text, 100000);
@@ -192,6 +196,45 @@ export class CalltraceService {
 
           if (cached) {
             out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
+            out.push(cached);
+            out.push(`---`);
+          }
+        };
+
+        /** Поиск в SBCtelco по SIP Call-ID (когда у звонка в VoIPmonitor dst_ip = 172.21.231.16) */
+        const SBC_DST_IP_BY_CALL_ID = '172.21.231.16';
+        const appendSbctelcoTraceByCallId = async (sipCallId: string) => {
+          if (!sipCallId || !sipCallId.trim()) return;
+          const id = sipCallId.trim();
+          const cacheKey = `sbctelco_callid_${id}`;
+          let cached = sbctelcoCache.get(cacheKey);
+          if (cached === undefined) {
+            try {
+              const raw = await this.sbctelcoService.getCallTrace({
+                nb_result: 2,
+                call_id: id,
+                recursive: 'yes',
+              });
+              const text = this.sbctelcoService.formatCallTraceText(raw);
+              cached = truncateText(text, 100000);
+            } catch (e: any) {
+              this.logger.error('Failed to fetch SBCtelco call_trace by call_id', {
+                callId,
+                sipCallId: id,
+                error: e?.message,
+              });
+              const errorJson = JSON.stringify({
+                message: e?.message,
+                status: e?.status,
+                response: e?.response,
+              }).replace(/\\"/g, '"');
+              cached = `ERROR ${errorJson}`;
+            }
+            sbctelcoCache.set(cacheKey, cached);
+          }
+          if (cached) {
+            out.push(`ℹ️  SBCtelco: звонок найден по call_id (не по номерам и времени)`);
+            out.push(`--- SBCTELCO [call_id: ${id}] ---`);
             out.push(cached);
             out.push(`---`);
           }
@@ -463,6 +506,8 @@ export class CalltraceService {
           // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними только если уже видели Notify (informLeadCall)
           if (call2clientCapture) {
             if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
+              const timeMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+              if (timeMatch) currentCallTime = timeMatch[1];
               out.push(line.replace(/\r/g, ''));
               addNextLineAfterSentReceived = true;
               continue;
@@ -629,9 +674,13 @@ export class CalltraceService {
                         fcallerd_type: 1, // точное совпадение
                       });
                       vmCall = response?.results?.[0] || null;
-                      // Нашли по A/B => дополнительно ищем в SBCtelco
+                      // Нашли по A/B => ищем в SBCtelco: по call_id если dst_ip = 172.21.231.16, иначе по номерам
                       if (vmCall) {
-                        await appendSbctelcoTrace(currentCallerA, currentCalledB);
+                        if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || failedSipCallId)) {
+                          await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || failedSipCallId!);
+                        } else {
+                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
+                        }
                       } else {
                         // Звонок не найден - добавляем предупреждение с URL
                         out.push(`--- Call not found in VoIPmonitor ---`);
@@ -671,6 +720,7 @@ export class CalltraceService {
                   : `caller: ${currentCallerA}, called: ${currentCalledB}`;
                 out.push(`--- VOIPMONITOR Call.Failed [${searchInfo}] ---`);
                 out.push(`  ID: ${vmCall.ID || 'N/A'}`);
+                out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
                 out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
                 out.push(`  Caller: ${displayCaller} -> Called: ${displayCalled}`);
                 out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
@@ -684,7 +734,10 @@ export class CalltraceService {
                 out.push(`---`);
 
                 await appendSipHistory(vmCall, `Call.Failed id=${vmCall.ID || 'N/A'}`);
-                
+                // Если dst_ip = 172.21.231.16 — ищем в SBCtelco по call_id (fbasename из VoIPmonitor CDR)
+                if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || failedSipCallId)) {
+                  await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || failedSipCallId!);
+                }
                 // Дополнительный поиск по номерам A и B (без фильтров по длительности)
                 if (failedSipCallId && currentCallerA && currentCalledB) {
                   try {
@@ -743,6 +796,7 @@ export class CalltraceService {
                     if (abVmCall) {
                       out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
                       out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
+                      out.push(`  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`);
                       out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
                       out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
                       out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
@@ -755,21 +809,23 @@ export class CalltraceService {
                       }
                       out.push(`---`);
 
-                      await appendSipHistory(abVmCall, `Additional Search id=${abVmCall.ID || 'N/A'}`);
-                      // Нашли по A/B => дополнительно ищем в SBCtelco
-                      if (currentCallerA && currentCalledB) {
-                        await appendSbctelcoTrace(currentCallerA, currentCalledB);
-                      }
-                    } else {
-                      const cachedUrl = voipCache.get(`${abCallCacheKey}_url`) as string;
-                      const abSearchUrl = cachedUrl || this.buildVoipmonitorSearchUrl({
-                        fdatefrom: searchFdatefrom || fdatefrom,
-                        fcaller: currentCallerA,
-                        fcalled: currentCalledB,
-                        fcallerd_type: 1,
-                      });
-                      out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`);
-                      out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
+                        await appendSipHistory(abVmCall, `Additional Search id=${abVmCall.ID || 'N/A'}`);
+                        // Нашли по A/B => ищем в SBCtelco: по call_id (fbasename) если dst_ip = 172.21.231.16, иначе по номерам
+                        if (abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (abVmCall.fbasename || abVmCall.callid)) {
+                          await appendSbctelcoTraceByCallId(abVmCall.fbasename || abVmCall.callid);
+                        } else if (currentCallerA && currentCalledB) {
+                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
+                        }
+                      } else {
+                        const cachedUrl = voipCache.get(`${abCallCacheKey}_url`) as string;
+                        const abSearchUrl = cachedUrl || this.buildVoipmonitorSearchUrl({
+                          fdatefrom: searchFdatefrom || fdatefrom,
+                          fcaller: currentCallerA,
+                          fcalled: currentCalledB,
+                          fcallerd_type: 1,
+                        });
+                        out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`);
+                        out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
                       out.push(`   Search URL: ${abSearchUrl}`);
                       out.push(`   Parameters: fdatefrom=${searchFdatefrom || fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`);
                       out.push(`---`);
@@ -850,6 +906,7 @@ export class CalltraceService {
                   const displayCalledConnected = (displayNumbersConnected?.calledB ?? (currentCallerA && currentCalledB ? currentCalledB : null)) ?? (vmCall.called || 'N/A');
                   out.push(`--- VOIPMONITOR Call.Connected [sipCallId: ${connectedSipCallId}] ---`);
                   out.push(`  ID: ${vmCall.ID || 'N/A'}`);
+                  out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
                   out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
                   out.push(`  Caller: ${displayCallerConnected} -> Called: ${displayCalledConnected}`);
                   out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
@@ -863,7 +920,10 @@ export class CalltraceService {
                   out.push(`---`);
 
                   await appendSipHistory(vmCall, `Call.Connected id=${vmCall.ID || 'N/A'}`);
-                  
+                  // Если dst_ip = 172.21.231.16 — ищем в SBCtelco по call_id (fbasename из VoIPmonitor CDR)
+                  if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || connectedSipCallId)) {
+                    await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || connectedSipCallId);
+                  }
                   // Дополнительный поиск по номерам A и B, если они есть
                   if (currentCallerA && currentCalledB && vmCall.duration) {
                     try {
@@ -938,6 +998,7 @@ export class CalltraceService {
                       if (abVmCall) {
                         out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
                         out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
+                        out.push(`  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`);
                         out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
                         out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
                         out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
@@ -951,9 +1012,11 @@ export class CalltraceService {
                         out.push(`---`);
 
                         await appendSipHistory(abVmCall, `Additional Search id=${abVmCall.ID || 'N/A'}`);
-                        // Нашли по A/B => дополнительно ищем в SBCtelco
-                        if (currentCallerA && currentCalledB) {
-                          await appendSbctelcoTrace(currentCallerA, currentCalledB);
+                        // Нашли по A/B => ищем в SBCtelco: по call_id (fbasename) если dst_ip = 172.21.231.16, иначе по номерам
+                        if (abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (abVmCall.fbasename || abVmCall.callid)) {
+                          await appendSbctelcoTraceByCallId(abVmCall.fbasename || abVmCall.callid);
+                        } else if (currentCallerA && currentCalledB) {
+                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
                         }
                       } else {
                         const cachedUrl = voipCache.get(`${abCallCacheKey}_url`) as string;

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Cron } from '@nestjs/schedule';
 import { SbctelcoService } from './sbctelco.service';
 
@@ -6,11 +7,16 @@ import { SbctelcoService } from './sbctelco.service';
 export class SbctelcoCronService {
   private readonly logger = new Logger(SbctelcoCronService.name);
 
-  constructor(private readonly sbctelcoService: SbctelcoService) {}
+  constructor(
+    private readonly sbctelcoService: SbctelcoService,
+    private readonly configService: ConfigService,
+  ) {}
 
-  /** Раз в минуту: забрать звонки за последние 2 минуты и добавить новые в БД */
+  /** Раз в минуту: забрать звонки за последние 2 минуты и добавить новые в БД (если SBC_CRON_FETCH_ENABLED=true) */
   @Cron('* * * * *')
   async handleFetchLastTwoMinutes() {
+    const enabled = this.configService.get<string>('SBC_CRON_FETCH_ENABLED');
+    if (enabled === 'false' || enabled === '0') return;
     try {
       const { added, ids } = await this.sbctelcoService.fetchAndSaveNewCallsFromLastTwoMinutes();
       if (added > 0) {

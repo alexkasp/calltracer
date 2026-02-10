@@ -79,6 +79,8 @@ export class VoipmonitorService {
       a_ua: r?.a_ua,
       b_ua: r?.b_ua,
 
+      // SIP Call-ID (для поиска в SBCtelco по call_id при dst_ip = 172.21.231.16)
+      callid: r?.callid ?? r?.call_id ?? r?.sip_call_id ?? '',
       // useful ids / links
       fbasename: r?.fbasename ?? r?.fbasename_orig,
       // VoIPmonitor иногда возвращает эти поля как "JSON в строке" => распарсим, чтобы убрать экранирование

@@ -4,5 +4,5 @@
  */
 import { webcrypto } from 'node:crypto';
 if (typeof globalThis.crypto === 'undefined') {
-  (globalThis as unknown as { crypto: Crypto }).crypto = webcrypto;
+  (globalThis as any).crypto = webcrypto;
 }
