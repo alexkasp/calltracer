@@ -12,10 +12,14 @@ type SbctelcoCallTraceParams = {
   recursive?: string; // yes/no
   /** SIP Call-ID — поиск звонка по call_id (например из VoIPmonitor) */
   call_id?: string;
+  /** Поиск по номеру ноги (leg_id), например other_leg_id из ответа по call_id) */
+  leg_id?: string;
   /** DateTime в формате YYYY-MM-DD HH:MM:SS — фильтр звонков после этого времени */
   start?: string;
   /** DateTime в формате YYYY-MM-DD HH:MM:SS — фильтр звонков до этого времени (рекомендуется задавать) */
   end?: string;
+  /** Состояние звонка, например Inactive */
+  call_state?: string;
 };
 
 /** Лимит звонков для запросов по крону и fetch-and-save */
@@ -38,7 +42,7 @@ export class SbctelcoService {
   ) {}
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
-    const { nb_result = 2, called, calling, recursive = 'yes', call_id, start, end } = params || {};
+    const { nb_result = 2, called, calling, recursive = 'yes', call_id, leg_id, start, end, call_state } = params || {};
 
     const qs = new URLSearchParams();
     qs.set('nb_result', String(nb_result));
@@ -46,8 +50,10 @@ export class SbctelcoService {
     if (calling) qs.set('calling', calling);
     if (recursive) qs.set('recursive', recursive);
     if (call_id) qs.set('call_id', call_id);
+    if (leg_id) qs.set('leg_id', leg_id);
     if (start) qs.set('start', start);
     if (end) qs.set('end', end);
+    if (call_state) qs.set('call_state', call_state);
 
     const url = `${this.baseUrl}/call_trace?${qs.toString()}`;
     const curlCommand = `curl -X GET "${url}" -u ${this.username}:*** -H "Content-Type: application/json"`;
@@ -61,8 +67,10 @@ export class SbctelcoService {
         calling,
         recursive,
         call_id,
+        leg_id,
         start,
         end,
+        call_state,
       });
 
       const response = await firstValueFrom(
@@ -126,9 +134,19 @@ export class SbctelcoService {
     return `${y}-${m}-${day} ${h}:${min}:${s}`;
   }
 
-  /** Параметр start для запроса «звонки за последние 2 минуты» в UTC+4 */
+  /** Параметр start для запроса «звонки за последнюю минуту» в UTC+4 */
+  getStartParamLastMinute(): string {
+    return this.formatStartParamUtc4(new Date(Date.now() - 1 * 60 * 1000));
+  }
+
+  /** @deprecated Используйте getStartParamLastMinute. Параметр start для запроса «звонки за последние 2 минуты» в UTC+4 */
   getStartParamLastTwoMinutes(): string {
     return this.formatStartParamUtc4(new Date(Date.now() - 2 * 60 * 1000));
+  }
+
+  /** Параметр start для запроса «звонки за последние 5 минут» в UTC+4 */
+  getStartParamLastFiveMinutes(): string {
+    return this.formatStartParamUtc4(new Date(Date.now() - 5 * 60 * 1000));
   }
 
   /**
@@ -144,15 +162,38 @@ export class SbctelcoService {
   }
 
   /**
-   * Забрать у SBCtelco звонки за последние 2 минуты (параметр start) и сохранить в БД только новые (по id).
+   * Забрать у SBCtelco звонки за последнюю минуту (параметр start) и сохранить в БД только новые (по id).
    * Возвращает количество добавленных записей.
+   */
+  async fetchAndSaveNewCallsFromLastMinute(): Promise<{ added: number; ids: string[] }> {
+    const start = this.getStartParamLastMinute();
+    return this.fetchAndSaveNewCallsFromStart(start);
+  }
+
+  /**
+   * Забрать у SBCtelco звонки за последние 2 минуты (параметр start) и сохранить в БД только новые (по id).
+   * @deprecated Используйте fetchAndSaveNewCallsFromLastMinute.
    */
   async fetchAndSaveNewCallsFromLastTwoMinutes(): Promise<{ added: number; ids: string[] }> {
     const start = this.getStartParamLastTwoMinutes();
+    return this.fetchAndSaveNewCallsFromStart(start);
+  }
+
+  /**
+   * Забрать у SBCtelco звонки за последние 5 минут (параметр start) и сохранить в БД только новые (по id).
+   * Возвращает количество добавленных записей.
+   */
+  async fetchAndSaveNewCallsFromLastFiveMinutes(): Promise<{ added: number; ids: string[] }> {
+    const start = this.getStartParamLastFiveMinutes();
+    return this.fetchAndSaveNewCallsFromStart(start);
+  }
+
+  private async fetchAndSaveNewCallsFromStart(start: string): Promise<{ added: number; ids: string[] }> {
     const raw = await this.getCallTrace({
       nb_result: this.fetchLimit,
       recursive: 'yes',
       start,
+      call_state: 'Inactive',
     });
     const meta = raw?.['***meta***'];
     const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');

@@ -150,7 +150,7 @@ export class CalltraceService {
         let foundInviteInLog = false;
         const voipCache = new Map<string, any | null>();
         const sipHistoryCache = new Map<string, string | null>();
-        const sbctelcoCache = new Map<string, string | null>();
+        const sbctelcoCache = new Map<string, string | { text: string; otherLegId?: string } | null>();
 
         const truncateText = (text: string, maxChars: number) => {
           if (!text) return '';
@@ -194,11 +194,34 @@ export class CalltraceService {
             sbctelcoCache.set(cacheKey, cached);
           }
 
-          if (cached) {
-            out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
-            out.push(cached);
-            out.push(`---`);
+          if (cached !== undefined && typeof cached === 'string') {
+            const isError = cached.startsWith('ERROR ');
+            const hasNoCallData = !/=== Звонок \d+/.test(cached);
+            if (isError || hasNoCallData) {
+              const timeInfo = timeRange ? `, время: ${timeRange.start} .. ${timeRange.end}` : '';
+              out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
+              out.push(`⚠️  SBCtelco: звонок не найден.`);
+              out.push(`   Поиск: calling=${calling}, called=${called}${timeInfo}`);
+              out.push(`   Итог: ${isError ? cached : 'в ответе нет данных о звонках'}`);
+              out.push(`---`);
+            } else {
+              out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
+              out.push(cached);
+              out.push(`---`);
+            }
           }
+        };
+
+        /** Извлечь other_leg_id из сырого ответа SBCtelco (первый звонок в ответе). */
+        const getOtherLegIdFromRaw = (raw: any): string | undefined => {
+          if (!raw || typeof raw !== 'object') return undefined;
+          const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
+          for (const key of callKeys) {
+            const call = raw[key];
+            if (call && typeof call === 'object' && call.other_leg_id != null && String(call.other_leg_id).trim() !== '')
+              return String(call.other_leg_id).trim();
+          }
+          return undefined;
         };
 
         /** Поиск в SBCtelco по SIP Call-ID (когда у звонка в VoIPmonitor dst_ip = 172.21.231.16) */
@@ -207,7 +230,7 @@ export class CalltraceService {
           if (!sipCallId || !sipCallId.trim()) return;
           const id = sipCallId.trim();
           const cacheKey = `sbctelco_callid_${id}`;
-          let cached = sbctelcoCache.get(cacheKey);
+          let cached = sbctelcoCache.get(cacheKey) as string | { text: string; otherLegId?: string } | undefined;
           if (cached === undefined) {
             try {
               const raw = await this.sbctelcoService.getCallTrace({
@@ -216,7 +239,8 @@ export class CalltraceService {
                 recursive: 'yes',
               });
               const text = this.sbctelcoService.formatCallTraceText(raw);
-              cached = truncateText(text, 100000);
+              const otherLegId = getOtherLegIdFromRaw(raw);
+              cached = { text: truncateText(text, 100000), otherLegId };
             } catch (e: any) {
               this.logger.error('Failed to fetch SBCtelco call_trace by call_id', {
                 callId,
@@ -228,14 +252,60 @@ export class CalltraceService {
                 status: e?.status,
                 response: e?.response,
               }).replace(/\\"/g, '"');
-              cached = `ERROR ${errorJson}`;
+              cached = { text: `ERROR ${errorJson}`, otherLegId: undefined };
             }
             sbctelcoCache.set(cacheKey, cached);
           }
-          if (cached) {
+          const mainText = typeof cached === 'string' ? cached : cached?.text;
+          const otherLegId = typeof cached === 'object' && cached && 'otherLegId' in cached ? cached.otherLegId : undefined;
+          const fetchOtherLeg = /^1|true|yes$/i.test(String(process.env.SBC_FETCH_OTHER_LEG ?? '').trim());
+          const mainIsError = mainText?.startsWith('ERROR ');
+          const mainHasNoData = !mainText?.trim() || (mainText && !/=== Звонок \d+/.test(mainText));
+          let pushedAny = false;
+          // true — выводим первую и вторую ногу; false — только вторую ногу (по leg_id)
+          if (fetchOtherLeg && mainText && !mainIsError && !mainHasNoData) {
             out.push(`ℹ️  SBCtelco: звонок найден по call_id (не по номерам и времени)`);
             out.push(`--- SBCTELCO [call_id: ${id}] ---`);
-            out.push(cached);
+            out.push(mainText);
+            out.push(`---`);
+            pushedAny = true;
+          }
+          if (otherLegId) {
+            const legCacheKey = `sbctelco_legid_${otherLegId}`;
+            let legCached = sbctelcoCache.get(legCacheKey) as string | undefined;
+            if (legCached === undefined) {
+              try {
+                const legRaw = await this.sbctelcoService.getCallTrace({
+                  nb_result: 2,
+                  leg_id: otherLegId,
+                  recursive: 'yes',
+                });
+                legCached = truncateText(this.sbctelcoService.formatCallTraceText(legRaw), 100000);
+              } catch (e: any) {
+                this.logger.error('Failed to fetch SBCtelco call_trace by leg_id', {
+                  callId,
+                  legId: otherLegId,
+                  error: e?.message,
+                });
+                legCached = `ERROR ${JSON.stringify({ message: e?.message }).replace(/\\"/g, '"')}`;
+              }
+              sbctelcoCache.set(legCacheKey, legCached);
+            }
+            const legIsError = legCached?.startsWith('ERROR ');
+            const legHasNoData = !legCached?.trim() || (legCached && !/=== Звонок \d+/.test(legCached));
+            if (!legIsError && !legHasNoData) {
+              out.push(`ℹ️  SBCtelco: звонок найден по leg_id (не по номерам и времени)`);
+              out.push(`--- SBCTELCO [leg_id: ${otherLegId}] ---`);
+              out.push(legCached);
+              out.push(`---`);
+              pushedAny = true;
+            }
+          }
+          if (!pushedAny) {
+            out.push(`--- SBCTELCO [call_id: ${id}] ---`);
+            out.push(`⚠️  SBCtelco: звонок не найден.`);
+            out.push(`   Поиск: call_id=${id}${otherLegId ? `, затем leg_id=${otherLegId}` : ''}`);
+            out.push(`   Итог: ${mainIsError ? mainText : mainHasNoData ? 'по call_id нет данных' : (otherLegId ? 'по leg_id нет данных или ошибка' : 'нет данных')}`);
             out.push(`---`);
           }
         };
