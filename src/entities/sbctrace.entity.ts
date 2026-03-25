@@ -25,6 +25,10 @@ export class Sbctrace {
   @Column({ type: 'datetime', nullable: true, name: 'call_timestamp' })
   callTimestamp: Date | null;
 
+  /** Первое значение MOS из trace_info (например "MOS: 4.3 ..."); null если в данных нет MOS */
+  @Column({ type: 'double', nullable: true })
+  mos: number | null;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

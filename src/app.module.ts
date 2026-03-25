@@ -15,6 +15,11 @@ import { SbctelcoController } from './controllers/sbctelco.controller';
 import { SbctelcoService } from './services/sbctelco.service';
 import { SbctelcoCronService } from './services/sbctelco-cron.service';
 import { Sbctrace } from './entities/sbctrace.entity';
+import { CallMonitorState } from './entities/call-monitor-state.entity';
+import { CallMonitorService } from './services/call-monitor.service';
+import { CallMonitorCronService } from './services/call-monitor-cron.service';
+import { CallMonitorController } from './controllers/call-monitor.controller';
+import { TelegramNotifyService } from './services/telegram-notify.service';
 
 @Module({
   imports: [
@@ -32,21 +37,24 @@ import { Sbctrace } from './entities/sbctrace.entity';
         password: String(config.get('MANAGER_DB_PASSWORD') ?? process.env.MANAGER_DB_PASSWORD ?? '').trim(),
         database: String(config.get('MANAGER_DB_DATABASE') ?? process.env.MANAGER_DB_DATABASE ?? 'sbclogs').trim(),
         timezone: 'Z', // хранить и читать даты в UTC
-        entities: [Sbctrace],
+        entities: [Sbctrace, CallMonitorState],
         synchronize: true, // создаёт таблицы и обновляет схему при изменении полей сущности
       }),
       inject: [ConfigService],
     }),
-    TypeOrmModule.forFeature([Sbctrace]),
+    TypeOrmModule.forFeature([Sbctrace, CallMonitorState]),
     HttpModule,
   ],
-  controllers: [AppController, CalltraceController, VoipmonitorController, SbctelcoController],
+  controllers: [AppController, CalltraceController, VoipmonitorController, SbctelcoController, CallMonitorController],
   providers: [
     AppService,
     CalltraceService,
     VoipmonitorService,
     SbctelcoService,
     SbctelcoCronService,
+    CallMonitorService,
+    CallMonitorCronService,
+    TelegramNotifyService,
     {
       provide: 'REDIS_CLIENT',
       useFactory: () => {

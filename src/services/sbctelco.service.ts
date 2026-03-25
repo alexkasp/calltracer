@@ -1,9 +1,11 @@
-import { Injectable, HttpException, HttpStatus, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
 import { Sbctrace } from '../entities/sbctrace.entity';
+import { TelegramNotifyService } from './telegram-notify.service';
+import { parseMosFromCallData } from '../utils/sbc-mos';
 
 type SbctelcoCallTraceParams = {
   nb_result?: number;
@@ -39,6 +41,7 @@ export class SbctelcoService {
   constructor(
     private readonly httpService: HttpService,
     @InjectRepository(Sbctrace) private readonly sbctraceRepo: Repository<Sbctrace>,
+    private readonly telegramNotify: TelegramNotifyService,
   ) {}
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
@@ -228,16 +231,24 @@ export class SbctelcoService {
   }
 
   /**
-   * Разобрать ответ call_trace и сохранить каждый звонок отдельной записью.
+   * Разобрать ответ call_trace и сохранить каждый звонок в sbctrace (независимо от MOS).
+   * Поле mos — первое распарсенное значение из trace_info; если MOS нет в данных — null.
+   * Если в батче есть звонки с MOS < 4, после сохранения отправляется отчёт в Telegram.
    * id записи = id звонка из JSON (например 0x0E47AC0F).
    */
-  async saveTracesFromResponse(raw: Record<string, unknown>): Promise<{ saved: number; ids: string[] }> {
+  async saveTracesFromResponse(raw: Record<string, unknown>): Promise<{
+    saved: number;
+    ids: string[];
+    lowMosEntries: Array<{ id: string; calling: string | null; called: string | null; mos: number }>;
+  }> {
     const meta = raw?.['***meta***'];
     const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
     const saved: Sbctrace[] = [];
+    const lowMosEntries: Array<{ id: string; calling: string | null; called: string | null; mos: number }> = [];
     for (const callId of callKeys) {
       const callData = raw[callId];
       if (!callData || typeof callData !== 'object') continue;
+      const mos = parseMosFromCallData(callData);
       const payload: Record<string, unknown> = { ...(meta != null && { '***meta***': meta }), [callId]: callData };
       const called = (callData as any)?.called;
       const calling = (callData as any)?.calling;
@@ -248,10 +259,29 @@ export class SbctelcoService {
         called: called != null ? String(called) : null,
         calling: calling != null ? String(calling) : null,
         callTimestamp,
+        mos,
       });
       saved.push(await this.sbctraceRepo.save(entity));
+      if (mos != null && mos < 4) {
+        lowMosEntries.push({
+          id: callId,
+          calling: calling != null ? String(calling) : null,
+          called: called != null ? String(called) : null,
+          mos,
+        });
+      }
     }
-    return { saved: saved.length, ids: saved.map((e) => e.id) };
+    if (lowMosEntries.length > 0) {
+      await this.telegramNotify.sendSbcLowMosReport(
+        lowMosEntries.map((e) => ({
+          id: e.id,
+          calling: e.calling,
+          called: e.called,
+          mos: e.mos,
+        })),
+      );
+    }
+    return { saved: saved.length, ids: saved.map((e) => e.id), lowMosEntries };
   }
 
   /**

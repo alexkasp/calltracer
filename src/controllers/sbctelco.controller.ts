@@ -63,6 +63,7 @@ export class SbctelcoController {
           id: e.id,
           calling: e.calling,
           called: e.called,
+          mos: e.mos,
           callTimestamp: e.callTimestamp,
           createdAt: e.createdAt,
           log: this.sbctelcoService.formatCallTraceText(e.payload ?? {}),
@@ -119,10 +120,15 @@ export class SbctelcoController {
     if (calling) params.calling = calling;
     if (recursive) params.recursive = recursive;
 
+    const acceptHeader = req?.headers?.accept || '';
+    const isApiRequest = acceptHeader.includes('application/json') || format === 'json';
+
     const raw = await this.sbctelcoService.getCallTrace(params);
 
+    let saveMeta: { saved: number; ids: string[]; lowMosCount: number } | undefined;
     if (save === '1' || save === 'true') {
-      await this.sbctelcoService.saveTracesFromResponse(raw);
+      const r = await this.sbctelcoService.saveTracesFromResponse(raw);
+      saveMeta = { saved: r.saved, ids: r.ids, lowMosCount: r.lowMosEntries.length };
     }
 
     if (format === 'text') {
@@ -130,10 +136,16 @@ export class SbctelcoController {
       return this.sbctelcoService.formatCallTraceText(raw);
     }
 
-    const acceptHeader = req?.headers?.accept || '';
-    const isApiRequest = acceptHeader.includes('application/json') || format === 'json';
     if (isApiRequest) {
       res?.type('application/json');
+      if (saveMeta) {
+        return {
+          ...(raw as object),
+          _saved: saveMeta.saved,
+          _savedIds: saveMeta.ids,
+          _lowMosCount: saveMeta.lowMosCount,
+        };
+      }
       return raw;
     }
 

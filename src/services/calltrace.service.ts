@@ -102,6 +102,26 @@ export class CalltraceService {
         return data;
       }
 
+      // Входящие dialer-звонки: первая строка содержит "Loading scenario dialer-inbound"
+      const firstLine = logText.trim().split('\n')[0] || '';
+      const isDialerInbound = firstLine.includes('Loading scenario dialer-inbound');
+
+      // Для dialer-inbound: callId из первого блока -----BEGIN SIP TRACE, первая строка вида "i: <uuid>"
+      let dialerInboundSipCallId: string | undefined;
+      if (isDialerInbound) {
+        const beginTrace = logText.indexOf('-----BEGIN SIP TRACE');
+        if (beginTrace !== -1) {
+          const afterTrace = logText.slice(beginTrace);
+          for (const ln of afterTrace.split('\n')) {
+            const m = ln.match(/^\s*i:\s*(.+)$/);
+            if (m) {
+              dialerInboundSipCallId = m[1].trim();
+              break;
+            }
+          }
+        }
+      }
+
       // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом)
       const eventsIndex = logText.indexOf('events:');
       const hasEventsSection = eventsIndex !== -1;
@@ -148,6 +168,10 @@ export class CalltraceService {
         const out: string[] = [];
         let capture = false;
         let foundInviteInLog = false;
+        // Для dialer-inbound используем callId из SIP TRACE (строка "i: <uuid>") для ответа и поиска в VoIPmonitor
+        if (isDialerInbound && dialerInboundSipCallId) {
+          sipCallId = dialerInboundSipCallId;
+        }
         const voipCache = new Map<string, any | null>();
         const sipHistoryCache = new Map<string, string | null>();
         const sbctelcoCache = new Map<string, string | { text: string; otherLegId?: string } | null>();
@@ -376,6 +400,9 @@ export class CalltraceService {
         let informLeadCall = false;
         // Для формата 2: следующая строка после "дата время Sent" или "Received:" идёт в вывод
         let addNextLineAfterSentReceived = false;
+        // Dialer (оба типа): при INVITE на sip.se.didlogic.net включаем режим как после "Notify sending to LeadCM" — выводим INVITE и строки "дата Sent:/Received:" + следующую
+        const isDialer = /^\d+\.\d+$/.test(callId) || isDialerInbound;
+        let dialerDidlogicCapture = false;
 
         const parseFromHeader = (line: string): string | null => {
           if (!line.includes('f:')) return null;
@@ -573,8 +600,8 @@ export class CalltraceService {
                continue;
           }
 
-          // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними только если уже видели Notify (informLeadCall)
-          if (call2clientCapture) {
+          // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними (после Notify sending to LeadCM или при dialer + INVITE на didlogic)
+          if (call2clientCapture || dialerDidlogicCapture) {
             if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
               const timeMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
               if (timeMatch) currentCallTime = timeMatch[1];
@@ -584,6 +611,7 @@ export class CalltraceService {
             }
             if (line.includes('name = Call.Connected') || line.includes('name = Call.Disconnected')) {
               call2clientCapture = false;
+              dialerDidlogicCapture = false;
             }
           }
 
@@ -633,6 +661,11 @@ export class CalltraceService {
           if (inviteMatch) {
             const userpart = inviteMatch[1];
             const domain = inviteMatch[2];
+            // Dialer: INVITE на sip.se.didlogic.net — включаем вывод INVITE и строк Sent/Received + следующая (как после Notify sending to LeadCM в S2L)
+            if (isDialer && domain.includes('sip.se.didlogic.net')) {
+              dialerDidlogicCapture = true;
+              out.push(line.replace(/\r/g, ''));
+            }
             const parsed = parseInviteLine(userpart, domain);
             if (parsed?.format === 1) {
               pendingInviteSimple = null; // A уже из INVITE; не перезаписывать из последующей строки f:
@@ -1146,6 +1179,55 @@ export class CalltraceService {
           out.push(`---`);
         }
 
+        // Dialer inbound: поиск в VoIPmonitor по callId из SIP TRACE (строка "i: <uuid>")
+        if (isDialerInbound && dialerInboundSipCallId && fallbackFdatefrom) {
+          const id = dialerInboundSipCallId;
+          let vmCall: any | null = voipCache.get(id) ?? null;
+          let dialerInboundVmError = false;
+          if (vmCall === undefined) {
+            try {
+              vmCall = await this.voipmonitorService.findCallBySipCallIdWithDate(id, fallbackFdatefrom);
+            } catch (e: any) {
+              this.logger.error('Failed to find call in VoIPmonitor for dialer-inbound', {
+                callId,
+                sipCallId: id,
+                error: e?.message,
+              });
+              vmCall = null;
+              dialerInboundVmError = true;
+              const errorJson = JSON.stringify({
+                message: e?.message,
+                status: e?.status,
+                response: e?.response,
+              }).replace(/\\"/g, '"');
+              out.push(`VOIPMONITOR dialer-inbound sipCallId=${id} error ${errorJson}`);
+            }
+            voipCache.set(id, vmCall);
+          }
+          if (vmCall) {
+            out.push(`--- VOIPMONITOR [dialer-inbound, sipCallId: ${id}] ---`);
+            out.push(`  ID: ${vmCall.ID || 'N/A'}`);
+            out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
+            out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
+            out.push(`  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`);
+            out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
+            out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+            if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
+              out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+            }
+            if (vmCall.a_codec || vmCall.b_codec) {
+              out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+            }
+            out.push(`---`);
+            await appendSipHistory(vmCall, `dialer-inbound id=${vmCall.ID || 'N/A'}`);
+            if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || id)) {
+              await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || id);
+            }
+          } else if (!dialerInboundVmError) {
+            out.push(`VOIPMONITOR dialer-inbound sipCallId=${id} not found`);
+          }
+        }
+
         if (foundInviteInLog && out.length > 0) {
           filteredLog = out.join('\n').trim();
         }
@@ -1153,14 +1235,20 @@ export class CalltraceService {
 
       // Важно: не возвращаем сырой debug/log (иначе в ответе снова будет "полный лог")
       // Заменяем строковые \n на реальные переносы строк
-      const processedEvents = events ? events.replace(/\\n/g, '\n') : events;
-      const processedLog = filteredLog ? filteredLog.replace(/\\n/g, '\n') : filteredLog;
-      
+      let processedEvents = events ? events.replace(/\\n/g, '\n') : events;
+      let processedLog = filteredLog ? filteredLog.replace(/\\n/g, '\n') : filteredLog;
+      const inboundPrefix = '--- DIALER INBOUND (входящий звонок) ---\n';
+      if (isDialerInbound) {
+        if (processedLog) processedLog = inboundPrefix + processedLog;
+        else if (processedEvents) processedEvents = inboundPrefix + processedEvents;
+      }
+
       return {
         success: data?.success ?? true,
         events: processedEvents,
         ...(processedLog ? { log: processedLog } : {}),
         ...(sipCallId ? { sipCallId } : {}),
+        ...(isDialerInbound ? { isDialerInbound: true } : {}),
       };
     } catch (error) {
       this.logger.error('Error formatting S2L log', {
