@@ -387,8 +387,9 @@ export class SbctelcoService {
       const connectTimestamp = this.parseConnectTimestamp(callData);
       const endTimestampFromTraces = this.getEndTimestampFromCallData(callData);
       const callDurationRaw = (callData as any)?.call_duration;
-      const callDurationSec =
-        callDurationRaw == null ? null : Number.isFinite(Number(callDurationRaw)) ? Number(callDurationRaw) : null;
+      // В ответах SBCtelco поле call_duration соответствует времени разговора (talk time), а не общей длительности звонка.
+      const talkDurationFromFieldSec =
+        callDurationRaw == null ? null : Number.isFinite(Number(callDurationRaw)) ? Math.floor(Number(callDurationRaw)) : null;
       const existing = await this.sbctraceRepo
         .createQueryBuilder('s')
         .where('s.id = :id', { id: recordId })
@@ -413,12 +414,18 @@ export class SbctelcoService {
         String(entity.callState).toLowerCase() === 'inactive'
           ? endTimestampFromTraces ?? entity.endTimestamp ?? new Date()
           : entity.endTimestamp ?? null;
-      entity.callDurationSec = callDurationSec;
-      const talkSec =
-        entity.endTimestamp && entity.connectTimestamp
-          ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.connectTimestamp.getTime()) / 1000))
-          : null;
-      entity.talkDurationSec = talkSec;
+      // Общая длительность звонка: end - start (если обе даты известны)
+      entity.callDurationSec =
+        entity.endTimestamp && entity.callTimestamp
+          ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.callTimestamp.getTime()) / 1000))
+          : entity.callDurationSec ?? null;
+      // Длительность разговора: из call_duration, иначе end - connect
+      entity.talkDurationSec =
+        talkDurationFromFieldSec != null
+          ? talkDurationFromFieldSec
+          : entity.endTimestamp && entity.connectTimestamp
+            ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.connectTimestamp.getTime()) / 1000))
+            : entity.talkDurationSec ?? null;
       entity.mos = mos;
       saved.push(await this.sbctraceRepo.save(entity));
       if (

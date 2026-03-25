@@ -42,11 +42,11 @@ export class Sbctrace {
   @Column({ type: 'datetime', nullable: true, name: 'connect_timestamp' })
   connectTimestamp: Date | null;
 
-  /** Общая длительность звонка (секунды), если передаётся SBCtelco */
+  /** Общая длительность звонка (секунды): end_timestamp - call_timestamp (если удалось вычислить) */
   @Column({ type: 'int', nullable: true, name: 'call_duration_sec' })
   callDurationSec: number | null;
 
-  /** Длительность разговора (секунды): end_timestamp - connect_timestamp (если удалось вычислить) */
+  /** Длительность разговора (секунды): из поля call_duration (SBCtelco), иначе end_timestamp - connect_timestamp */
   @Column({ type: 'int', nullable: true, name: 'talk_duration_sec' })
   talkDurationSec: number | null;
 
