@@ -1,7 +1,7 @@
 import { Injectable, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { firstValueFrom } from 'rxjs';
 import { Sbctrace } from '../entities/sbctrace.entity';
 import { TelegramNotifyService } from './telegram-notify.service';
@@ -9,6 +9,7 @@ import { parseMosFromCallData } from '../utils/sbc-mos';
 
 type SbctelcoCallTraceParams = {
   nb_result?: number;
+  page?: number;
   called?: string;
   calling?: string;
   recursive?: string; // yes/no
@@ -25,7 +26,11 @@ type SbctelcoCallTraceParams = {
 };
 
 /** Лимит звонков для запросов по крону и fetch-and-save */
-const SBC_FETCH_LIMIT = 100;
+const SBC_FETCH_LIMIT = 1000;
+const FETCH_WINDOW_MINUTES = 15;
+const ID_DEDUP_WINDOW_MINUTES = 15;
+const FETCH_WINDOW_MS = FETCH_WINDOW_MINUTES * 60 * 1000;
+const ID_DEDUP_WINDOW_MS = ID_DEDUP_WINDOW_MINUTES * 60 * 1000;
 
 @Injectable()
 export class SbctelcoService {
@@ -33,6 +38,12 @@ export class SbctelcoService {
 
   /** Лимит звонков при запросе за последние 2 минуты (крон и fetch-and-save) */
   readonly fetchLimit = SBC_FETCH_LIMIT;
+
+  private readonly MOS_ALERT_THRESHOLD = (() => {
+    const v = String(process.env.SBC_MOS_ALERT_THRESHOLD ?? '4').trim().replace(',', '.');
+    const n = Number(v);
+    return Number.isFinite(n) ? n : 4;
+  })();
 
   private readonly baseUrl = process.env.SBCTELCO_BASE_URL || 'http://172.24.121.150:12358';
   private readonly username = process.env.SBCTELCO_USER || 'rouser';
@@ -45,10 +56,11 @@ export class SbctelcoService {
   ) {}
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
-    const { nb_result = 2, called, calling, recursive = 'yes', call_id, leg_id, start, end, call_state } = params || {};
+    const { nb_result = 2, page, called, calling, recursive = 'yes', call_id, leg_id, start, end, call_state } = params || {};
 
     const qs = new URLSearchParams();
     qs.set('nb_result', String(nb_result));
+    if (page != null) qs.set('page', String(page));
     if (called) qs.set('called', called);
     if (calling) qs.set('calling', calling);
     if (recursive) qs.set('recursive', recursive);
@@ -66,6 +78,7 @@ export class SbctelcoService {
         url,
         curlCommand,
         nb_result,
+        page,
         called,
         calling,
         recursive,
@@ -119,10 +132,54 @@ export class SbctelcoService {
     if (ts == null) return null;
     if (typeof ts === 'number') return new Date(ts > 1e10 ? ts : ts * 1000);
     if (typeof ts === 'string') {
-      const d = new Date(ts);
-      return Number.isNaN(d.getTime()) ? null : d;
+      return this.parseSbcDateTime(ts);
     }
     return null;
+  }
+
+  private parseConnectTimestamp(callData: any): Date | null {
+    const ts = callData?.connect_timestamp;
+    if (ts == null) return null;
+    if (typeof ts === 'number') return new Date(ts > 1e10 ? ts : ts * 1000);
+    if (typeof ts === 'string') {
+      // Часто SBC отдаёт "1970/01/01 04:00:00 +0400" как «нет соединения»
+      if (ts.trim().startsWith('1970/01/01')) return null;
+      const d = this.parseSbcDateTime(ts);
+      // Доп. защита: любые "нулевые" даты считаем отсутствием значения
+      if (d && d.getUTCFullYear() <= 1971) return null;
+      return d;
+    }
+    return null;
+  }
+
+  /** Формат SBC: "YYYY/MM/DD HH:MM:SS +0400" (или совместимые варианты). */
+  private parseSbcDateTime(s: string): Date | null {
+    const t = String(s).trim();
+    if (!t) return null;
+    // "2026/03/25 10:29:15 +0400" -> "2026-03-25T10:29:15+04:00"
+    const m = t.match(/^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+([+-]\d{2})(\d{2})$/);
+    if (m) {
+      const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}${m[5]}:${m[6]}`;
+      const d = new Date(iso);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    const d = new Date(t);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
+
+  private getEndTimestampFromCallData(callData: any): Date | null {
+    const traces = callData?.call_traces;
+    if (!traces || typeof traces !== 'object') return null;
+    let best: Date | null = null;
+    for (const v of Object.values(traces)) {
+      if (!v || typeof v !== 'object') continue;
+      const ts = (v as any).timestamp;
+      if (typeof ts !== 'string') continue;
+      const d = this.parseSbcDateTime(ts);
+      if (!d) continue;
+      if (!best || d.getTime() > best.getTime()) best = d;
+    }
+    return best;
   }
 
   /** Форматирует Date в строку YYYY-MM-DD HH:MM:SS в поясе UTC+4 для параметра start API SBCtelco */
@@ -137,12 +194,20 @@ export class SbctelcoService {
     return `${y}-${m}-${day} ${h}:${min}:${s}`;
   }
 
-  /** Параметр start для запроса «звонки за последнюю минуту» в UTC+4 */
-  getStartParamLastMinute(): string {
-    return this.formatStartParamUtc4(new Date(Date.now() - 1 * 60 * 1000));
+  /** Параметр start для запроса «звонки за последние 10 минут» в UTC+4 */
+  getStartParamLastTenMinutes(): string {
+    return this.formatStartParamUtc4(new Date(Date.now() - FETCH_WINDOW_MS));
   }
 
-  /** @deprecated Используйте getStartParamLastMinute. Параметр start для запроса «звонки за последние 2 минуты» в UTC+4 */
+  /** Параметры start/end для overlap-окна за последние 15 минут (UTC+4). */
+  getStartEndParamsLastFifteenMinutes(): { start: string; end: string } {
+    return {
+      start: this.formatStartParamUtc4(new Date(Date.now() - FETCH_WINDOW_MS)),
+      end: this.formatStartParamUtc4(new Date()),
+    };
+  }
+
+  /** @deprecated Используйте getStartParamLastTenMinutes. Параметр start для запроса «звонки за последние 2 минуты» в UTC+4 */
   getStartParamLastTwoMinutes(): string {
     return this.formatStartParamUtc4(new Date(Date.now() - 2 * 60 * 1000));
   }
@@ -165,12 +230,36 @@ export class SbctelcoService {
   }
 
   /**
-   * Забрать у SBCtelco звонки за последнюю минуту (параметр start) и сохранить в БД только новые (по id).
+   * Забрать у SBCtelco звонки за последние 10 минут (параметр start).
+   * Сохранить в БД только те id, которые не сохранялись в sbctrace за последние 15 минут.
    * Возвращает количество добавленных записей.
    */
   async fetchAndSaveNewCallsFromLastMinute(): Promise<{ added: number; ids: string[] }> {
-    const start = this.getStartParamLastMinute();
+    const start = this.getStartParamLastTenMinutes();
     return this.fetchAndSaveNewCallsFromStart(start);
+  }
+
+  /** Active snapshot: раз в минуту обновить/сохранить все активные звонки (с пагинацией). */
+  async fetchAndUpsertActiveSnapshot(): Promise<{ saved: number; ids: string[] }> {
+    const raw = await this.getCallTraceAllPages({
+      nb_result: this.fetchLimit,
+      recursive: 'yes',
+      call_state: 'Active',
+    });
+    return this.saveTracesFromResponse(raw, { defaultState: 'Active', notifyLowMos: false });
+  }
+
+  /** Inactive overlap: за окно последних 15 минут, только id не сохранённые за последние 15 минут. */
+  async fetchAndSaveInactiveWithOverlap(): Promise<{ added: number; ids: string[] }> {
+    const { start, end } = this.getStartEndParamsLastFifteenMinutes();
+    const raw = await this.getCallTraceAllPages({
+      nb_result: this.fetchLimit,
+      recursive: 'yes',
+      start,
+      end,
+      call_state: 'Inactive',
+    });
+    return this.filterAndSaveByRecentIds(raw, 'Inactive');
   }
 
   /**
@@ -192,26 +281,53 @@ export class SbctelcoService {
   }
 
   private async fetchAndSaveNewCallsFromStart(start: string): Promise<{ added: number; ids: string[] }> {
-    const raw = await this.getCallTrace({
+    const raw = await this.getCallTraceAllPages({
       nb_result: this.fetchLimit,
       recursive: 'yes',
       start,
       call_state: 'Inactive',
     });
+    return this.filterAndSaveByRecentIds(raw, 'Inactive');
+  }
+
+  private async filterAndSaveByRecentIds(
+    raw: Record<string, unknown>,
+    defaultState: 'Active' | 'Inactive',
+  ): Promise<{ added: number; ids: string[] }> {
     const meta = raw?.['***meta***'];
     const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
     if (callKeys.length === 0) return { added: 0, ids: [] };
-    const existing = await this.sbctraceRepo.find({
-      where: { id: In(callKeys) },
-      select: ['id'],
-    });
-    const existingSet = new Set(existing.map((r) => r.id));
-    const newIds = callKeys.filter((id) => !existingSet.has(id));
+    const cutoff = new Date(Date.now() - ID_DEDUP_WINDOW_MS);
+    const recentlySaved = await this.sbctraceRepo
+      .createQueryBuilder('s')
+      .select('s.id', 'id')
+      .where('s.id IN (:...ids)', { ids: callKeys })
+      .andWhere('s.created_at >= :cutoff', { cutoff })
+      .getRawMany<{ id: string }>();
+    const recentSet = new Set(recentlySaved.map((r) => r.id));
+    const newIds = callKeys.filter((id) => !recentSet.has(id));
     if (newIds.length === 0) return { added: 0, ids: [] };
     const rawFiltered: Record<string, unknown> = { ...(meta != null && { '***meta***': meta }) };
     for (const id of newIds) rawFiltered[id] = raw[id];
-    const { saved, ids } = await this.saveTracesFromResponse(rawFiltered);
+    const { saved, ids } = await this.saveTracesFromResponse(rawFiltered, { defaultState });
     return { added: saved, ids };
+  }
+
+  /** Считывает все страницы call_trace (page=1..N), пока размер страницы == nb_result. */
+  private async getCallTraceAllPages(baseParams: SbctelcoCallTraceParams): Promise<Record<string, unknown>> {
+    const limit = baseParams.nb_result ?? this.fetchLimit;
+    const merged: Record<string, unknown> = {};
+    let page = 1;
+    while (true) {
+      const raw = await this.getCallTrace({ ...baseParams, page });
+      if (page === 1 && raw?.['***meta***'] != null) merged['***meta***'] = raw['***meta***'];
+      const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
+      for (const key of callKeys) merged[key] = raw[key];
+      if (callKeys.length < limit) break;
+      page += 1;
+      if (page > 100) break;
+    }
+    return merged;
   }
 
   /**
@@ -233,10 +349,20 @@ export class SbctelcoService {
   /**
    * Разобрать ответ call_trace и сохранить каждый звонок в sbctrace (независимо от MOS).
    * Поле mos — первое распарсенное значение из trace_info; если MOS нет в данных — null.
-   * Если в батче есть звонки с MOS < 4, после сохранения отправляется отчёт в Telegram.
+   * Если в батче есть звонки с MOS ниже порога, после сохранения отправляется отчёт в Telegram.
    * id записи = id звонка из JSON (например 0x0E47AC0F).
    */
-  async saveTracesFromResponse(raw: Record<string, unknown>): Promise<{
+  private resolveRecordId(rawKey: string, callData: any): string {
+    const legId = callData?.leg_id != null ? String(callData.leg_id) : null;
+    const callId = callData?.call_id != null ? String(callData.call_id) : null;
+    const base = legId ? `leg:${legId}` : callId ? `call:${callId}` : `raw:${rawKey}`;
+    return base.slice(0, 64);
+  }
+
+  async saveTracesFromResponse(
+    raw: Record<string, unknown>,
+    opts?: { defaultState?: 'Active' | 'Inactive'; notifyLowMos?: boolean },
+  ): Promise<{
     saved: number;
     ids: string[];
     lowMosEntries: Array<{ id: string; calling: string | null; called: string | null; mos: number }>;
@@ -249,29 +375,67 @@ export class SbctelcoService {
       const callData = raw[callId];
       if (!callData || typeof callData !== 'object') continue;
       const mos = parseMosFromCallData(callData);
+      const recordId = this.resolveRecordId(callId, callData);
       const payload: Record<string, unknown> = { ...(meta != null && { '***meta***': meta }), [callId]: callData };
       const called = (callData as any)?.called;
       const calling = (callData as any)?.calling;
+      const legId = (callData as any)?.leg_id;
+      const externalCallId = (callData as any)?.call_id;
+      const state = (callData as any)?.call_state ?? opts?.defaultState ?? null;
+      const terminateReason = (callData as any)?.terminate_reason ?? null;
       const callTimestamp = this.parseCallTimestamp(callData);
-      const entity = this.sbctraceRepo.create({
-        id: callId,
-        payload,
-        called: called != null ? String(called) : null,
-        calling: calling != null ? String(calling) : null,
-        callTimestamp,
-        mos,
-      });
+      const connectTimestamp = this.parseConnectTimestamp(callData);
+      const endTimestampFromTraces = this.getEndTimestampFromCallData(callData);
+      const callDurationRaw = (callData as any)?.call_duration;
+      const callDurationSec =
+        callDurationRaw == null ? null : Number.isFinite(Number(callDurationRaw)) ? Number(callDurationRaw) : null;
+      const existing = await this.sbctraceRepo
+        .createQueryBuilder('s')
+        .where('s.id = :id', { id: recordId })
+        .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', { legId: legId != null ? String(legId) : '' })
+        .orWhere(externalCallId != null ? 's.call_id = :callId' : '1=0', {
+          callId: externalCallId != null ? String(externalCallId) : '',
+        })
+        .orderBy('s.created_at', 'DESC')
+        .getOne();
+      const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
+      entity.payload = payload;
+      entity.called = called != null ? String(called) : null;
+      entity.calling = calling != null ? String(calling) : null;
+      entity.legId = legId != null ? String(legId) : null;
+      entity.callId = externalCallId != null ? String(externalCallId) : null;
+      entity.callState = state != null ? String(state) : entity.callState ?? null;
+      entity.terminateReason = terminateReason != null ? String(terminateReason) : entity.terminateReason ?? null;
+      entity.callTimestamp = callTimestamp;
+      entity.connectTimestamp = connectTimestamp;
+      entity.lastSeenAt = new Date();
+      entity.endTimestamp =
+        String(entity.callState).toLowerCase() === 'inactive'
+          ? endTimestampFromTraces ?? entity.endTimestamp ?? new Date()
+          : entity.endTimestamp ?? null;
+      entity.callDurationSec = callDurationSec;
+      const talkSec =
+        entity.endTimestamp && entity.connectTimestamp
+          ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.connectTimestamp.getTime()) / 1000))
+          : null;
+      entity.talkDurationSec = talkSec;
+      entity.mos = mos;
       saved.push(await this.sbctraceRepo.save(entity));
-      if (mos != null && mos < 4) {
+      if (
+        mos != null &&
+        mos < this.MOS_ALERT_THRESHOLD &&
+        (!existing || existing.mos == null || existing.mos >= this.MOS_ALERT_THRESHOLD)
+      ) {
         lowMosEntries.push({
-          id: callId,
+          id: entity.id,
           calling: calling != null ? String(calling) : null,
           called: called != null ? String(called) : null,
           mos,
         });
       }
     }
-    if (lowMosEntries.length > 0) {
+    const shouldNotify = opts?.notifyLowMos !== false;
+    if (shouldNotify && lowMosEntries.length > 0) {
       await this.telegramNotify.sendSbcLowMosReport(
         lowMosEntries.map((e) => ({
           id: e.id,

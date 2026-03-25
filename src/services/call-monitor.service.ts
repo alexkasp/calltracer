@@ -93,6 +93,11 @@ export class CallMonitorService {
   private readonly ipmaxiStatUrl = 'https://api.ipmaxi.convolo.ai/api/v1/partner/stat/calls/recent';
   private readonly leadsCallsRecentUrl = 'https://api.leads.convolo.ai/api/v1/partner/calls/recent';
 
+  private readonly TELEGRAM_ALERTS_ENABLED = (() => {
+    const v = String(process.env.CALL_MONITOR_TELEGRAM_ALERTS_ENABLED ?? 'true').trim().toLowerCase();
+    return !(v === 'false' || v === '0' || v === 'off' || v === 'no');
+  })();
+
   private readonly EMA_ALPHA = (() => {
     const v = String(process.env.CALL_MONITOR_EMA_ALPHA ?? '0.1').trim();
     const n = Number(v);
@@ -981,7 +986,7 @@ export class CallMonitorService {
         lastSlot: slot,
       };
       await this.setState(stateKey, next);
-      if (this.telegramNotify?.isEnabled?.()) {
+      if (this.TELEGRAM_ALERTS_ENABLED && this.telegramNotify?.isEnabled?.()) {
         await this.telegramNotify.sendAlertResolved(source, slot, currentTotal5, currentFailRate5).catch(() => {});
       }
       return;
@@ -1009,7 +1014,7 @@ export class CallMonitorService {
         lastSlot: slot,
       };
       await this.setState(stateKey, next);
-      if (this.telegramNotify?.isEnabled?.()) {
+      if (this.TELEGRAM_ALERTS_ENABLED && this.telegramNotify?.isEnabled?.()) {
         await this.telegramNotify
           .sendAlert({
             level,

@@ -19,7 +19,8 @@
 
 | Расписание | Что делает |
 |------------|------------|
-| **Каждую минуту** (`* * * * *`) | Запрос к API SBCtelco: звонки за **последнюю минуту**, параметр `call_state=Inactive`, **все новые** по id звонки сохраняются в **`sbctrace`**. Поле **`mos`** — первое значение **MOS** из **`trace_info`** / `call_traces` (если удалось распарсить). Отдельно в **Telegram** (чат отчётов) — только если в этом батче есть **проблемные** звонки с **MOS < 4** (краткий список: id, calling, called, MOS). Включение крона: **`SBC_CRON_FETCH_ENABLED`** не `false`/`0`. |
+| **Каждую минуту** (`* * * * *`) | Active snapshot: `call_state=Active`, `recursive=yes`, `nb_result=1000` (+ пагинация по `page`) — обновляет/сохраняет текущие активные звонки по ключу `leg_id/call_id`. |
+| **Каждые 5 минут** (`*/5 * * * *`) | Inactive overlap: окно `start=now-15m`, `end=now`, `call_state=Inactive`, `recursive=yes`, `nb_result=1000` (+ пагинация). В `sbctrace` сохраняются id, которых не было за последние **15 минут**; для существующих `leg_id/call_id` выполняется update и перевод в завершённые. При `MOS < 4` отправляется Telegram-отчёт. |
 | **Раз в сутки в 03:00** (`0 3 * * *`) | Удаление из `sbctrace` записей **старше 5 дней** (очистка истории). |
 
 При ручном сохранении ответа `call_trace` (`save=1`) в JSON при `Accept: application/json` или `format=json` дополнительно: **`_saved`**, **`_savedIds`**, **`_lowMosCount`** (сколько сохранённых строк с **MOS < 4**; Telegram уходит, если таких хотя бы одна).
@@ -72,7 +73,9 @@
 
 - `CONVOLO_API_KEY` — ключ API Convolo (логи и мониторинг).
 - `CALL_MONITOR_CRON_ENABLED` — включение крона мониторинга.
+- `CALL_MONITOR_TELEGRAM_ALERTS_ENABLED` — включение Telegram-алертов от Call Monitor (по умолчанию `true`; `false/0/off/no` выключает).
 - `SBC_CRON_FETCH_ENABLED`, `SBC_FETCH_OTHER_LEG` — SBCtelco и вывод второй ноги.
+- `SBC_MOS_ALERT_THRESHOLD` — порог MOS для алертов по `sbctrace` (по умолчанию `4`; алерт, если MOS < порога).
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — Telegram; опционально `TELEGRAM_CHAT_ID_ALERTS`, `TELEGRAM_CHAT_ID_REPORTS`.
 - Параметры алертов и EMA: `CALL_MONITOR_ALERT_*`, `CALL_MONITOR_EMA_*` и др. (см. код `CallMonitorService`).
 

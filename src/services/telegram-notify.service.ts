@@ -133,15 +133,20 @@ export class TelegramNotifyService {
   }
 
   /**
-   * Отчёт только по проблемным звонкам SBCtelco (MOS ниже 4) внутри батча; остальные звонки уже сохранены в БД.
+   * Отчёт только по проблемным звонкам SBCtelco (MOS ниже порога) внутри батча; остальные звонки уже сохранены в БД.
    */
   async sendSbcLowMosReport(
     entries: Array<{ id: string; calling: string | null; called: string | null; mos: number }>,
   ): Promise<boolean> {
     if (!this.enabled || entries.length === 0) return false;
     const esc = (s: string) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const thr = (() => {
+      const v = String(process.env.SBC_MOS_ALERT_THRESHOLD ?? '4').trim().replace(',', '.');
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 4;
+    })();
     const lines: string[] = [
-      '<b>📉 SBCtelco: низкий MOS (&lt; 4)</b>',
+      `<b>📉 SBCtelco: низкий MOS (&lt; ${esc(String(thr))})</b>`,
       `Сохранено записей: ${entries.length}`,
       `${new Date().toISOString().slice(0, 19)}Z`,
       '',
