@@ -7,7 +7,6 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 import Redis from 'ioredis';
 import { AppController } from './controllers/app.controller';
-import { AppService } from './services/app.service';
 import { CalltraceController } from './controllers/calltrace.controller';
 import { CalltraceService } from './services/calltrace.service';
 import { VoipmonitorController } from './controllers/voipmonitor.controller';
@@ -84,7 +83,6 @@ import { AuthGuard } from './guards/auth.guard';
     CallMonitorController,
   ],
   providers: [
-    AppService,
     AuthService,
     CalltraceService,
     VoipmonitorService,
