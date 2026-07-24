@@ -102,6 +102,11 @@ export class CalltraceService {
         return data;
       }
 
+      // Новый формат pbxLog у dialer-приложения (построчный "<ts> <event> : {json}", без сырых SIP-трейсов)
+      if (this.isDialerJsonLog(logText)) {
+        return this.formatDialerJsonLog(callId, logText);
+      }
+
       // Входящие dialer-звонки: первая строка содержит "Loading scenario dialer-inbound"
       const firstLine = logText.trim().split('\n')[0] || '';
       const isDialerInbound = firstLine.includes('Loading scenario dialer-inbound');
@@ -1258,6 +1263,202 @@ export class CalltraceService {
       // В случае ошибки возвращаем исходные данные
       return data;
     }
+  }
+
+  /**
+   * Новый формат pbxLog у dialer-приложения (замечен с app version 1.1.17b17): построчный
+   * "<timestamp> <event> : {json}" вместо сырых SIP-трейсов ("-----BEGIN SIP TRACE", "INVITE sip:").
+   * SIP Call-ID в таком логе нет вообще — только номера A/Б и точное время звонка.
+   */
+  private isDialerJsonLog(logText: string): boolean {
+    return logText.includes('"CONVOLO_CALL_ID"') || logText.includes('outbound call started event sent');
+  }
+
+  private async formatDialerJsonLog(callId: string, logText: string): Promise<any> {
+    const lineRe = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+([^:{]+?)\s*(?::\s*(\{.*\}|\[.*\]|".*"))?$/;
+    type Entry = { time: string; event: string; payload: any };
+    const entries: Entry[] = [];
+
+    for (const raw of logText.split('\n')) {
+      const line = raw.replace(/\r$/, '');
+      if (!line.trim()) continue;
+      const m = line.match(lineRe);
+      if (!m) continue;
+      const [, time, event, payloadStr] = m;
+      let payload: any;
+      if (payloadStr) {
+        try {
+          payload = JSON.parse(payloadStr);
+        } catch {
+          payload = payloadStr;
+        }
+      }
+      entries.push({ time, event: event.trim(), payload });
+    }
+
+    if (entries.length === 0) {
+      return { success: true, events: `--- EVENTS ---\n${logText}\n---` };
+    }
+
+    // Номера A/Б: предпочитаем "starting client call" (CONVOLO_*), иначе fallback на "call started"/"got sip num data"
+    let callerA: string | undefined;
+    let calledB: string | undefined;
+    let creationTime: string | undefined;
+
+    const startingClientCall = entries.find((e) => e.event === 'starting client call');
+    if (startingClientCall?.payload) {
+      callerA = startingClientCall.payload.CONVOLO_CALLER_ID;
+      calledB = startingClientCall.payload.CONVOLO_DESTINATION;
+    }
+    const callStarted = entries.find((e) => e.event === 'call started');
+    if (callStarted?.payload) {
+      calledB = calledB || callStarted.payload.clientPhone;
+      creationTime = callStarted.payload.channel?.creationtime;
+    }
+    const sipNumData = entries.find((e) => e.event === 'got sip num data');
+    if (sipNumData?.payload) {
+      callerA = callerA || sipNumData.payload.confirmedCallerId || sipNumData.payload.lineName;
+    }
+
+    const normalizeNumber = (n?: string): string | undefined => {
+      if (!n) return n;
+      return n.startsWith('971') ? `0${n.slice(3)}` : n;
+    };
+    const callerNormalized = normalizeNumber(callerA);
+    // clientPhone/CONVOLO_DESTINATION уже в локальном формате (0XXXXXXXXX), нормализация не нужна
+    const calledNormalized = calledB;
+
+    // fdatefrom для VoIPmonitor: берём naive wall-clock из channel.creationtime (совпадает с calldate в VoIPmonitor,
+    // т.к. это то же серверное локальное время), иначе — дата первой строки лога с 00:00:00
+    let fdatefrom: string;
+    const creationMatch = creationTime?.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+    if (creationMatch) {
+      fdatefrom = creationMatch[1];
+    } else {
+      fdatefrom = `${entries[0].time.slice(0, 10)}T00:00:00`;
+    }
+
+    // Читаемая сводка ключевых событий
+    const summaryLines: string[] = [];
+    for (const e of entries) {
+      switch (e.event) {
+        case 'call started':
+          summaryLines.push(`${e.time} | Call started: ${e.payload?.clientPhone ?? ''} (agent ${e.payload?.channel?.caller?.name ?? ''})`);
+          break;
+        case 'dial state':
+          if (e.payload?.dialstatus) summaryLines.push(`${e.time} | Dial state: ${e.payload.dialstatus}`);
+          break;
+        case 'lead answered':
+          summaryLines.push(`${e.time} | Lead answered (${e.payload?.msSinceDial ?? '?'}ms since dial)`);
+          break;
+        case 'agent disconnected':
+        case 'client disconnected':
+          summaryLines.push(`${e.time} | ${e.event}`);
+          break;
+        case 'finishing session':
+          summaryLines.push(`${e.time} | Session finished`);
+          break;
+        default:
+          break;
+      }
+    }
+    const events = `--- EVENTS ---\n${summaryLines.join('\n')}\n---`;
+
+    const out: string[] = [];
+    let vmCall: any = null;
+    if (callerNormalized && calledNormalized) {
+      try {
+        const response = await this.voipmonitorService.getCalls({
+          limit: 1,
+          start: 0,
+          fdatefrom,
+          fcaller: callerNormalized,
+          fcalled: calledNormalized,
+          fcallerd_type: 1,
+        });
+        vmCall = response?.results?.[0] || null;
+      } catch (e: any) {
+        this.logger.error('Failed to find call in VoIPmonitor for dialer JSON log', {
+          callId,
+          callerA: callerNormalized,
+          calledB: calledNormalized,
+          fdatefrom,
+          error: e?.message,
+        });
+        out.push(`VOIPMONITOR caller=${callerNormalized} called=${calledNormalized} error ${e?.message}`);
+      }
+    }
+
+    let sipCallId: string | undefined;
+    const SBC_DST_IP_BY_CALL_ID = '172.21.231.16';
+    if (vmCall) {
+      sipCallId = vmCall.fbasename || vmCall.callid || undefined;
+      out.push(`--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] ---`);
+      out.push(`  ID: ${vmCall.ID || 'N/A'}`);
+      out.push(`  Call-ID (fbasename): ${sipCallId || 'N/A'}`);
+      out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
+      out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
+      out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+      if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
+        out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+      }
+      if (vmCall.a_codec || vmCall.b_codec) {
+        out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+      }
+      out.push(`---`);
+
+      try {
+        const sipHistory = await this.voipmonitorService.getSipHistoryBriefDataById(String(vmCall.ID));
+        if (sipHistory) {
+          out.push(`--- VOIPMONITOR SIP HISTORY [id=${vmCall.ID}] ---`);
+          out.push(sipHistory);
+          out.push(`---`);
+        }
+      } catch (e: any) {
+        this.logger.error('Failed to fetch VoIPmonitor SIP history for dialer JSON log', {
+          callId,
+          voipmonitorId: vmCall.ID,
+          error: e?.message,
+        });
+      }
+
+      try {
+        if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && sipCallId) {
+          const raw = await this.sbctelcoService.getCallTrace({ nb_result: 2, call_id: sipCallId, recursive: 'yes' });
+          out.push(`--- SBCTELCO [call_id: ${sipCallId}] ---`);
+          out.push(this.sbctelcoService.formatCallTraceText(raw));
+          out.push(`---`);
+        } else if (callerNormalized && calledNormalized) {
+          const timeRange = vmCall.calldate ? this.sbctelcoService.getStartEndForCallTime(vmCall.calldate) : null;
+          const raw = await this.sbctelcoService.getCallTrace({
+            nb_result: 2,
+            calling: callerNormalized,
+            called: calledNormalized,
+            recursive: 'yes',
+            ...(timeRange && { start: timeRange.start, end: timeRange.end }),
+          });
+          out.push(`--- SBCTELCO [calling: ${callerNormalized} -> called: ${calledNormalized}] ---`);
+          out.push(this.sbctelcoService.formatCallTraceText(raw));
+          out.push(`---`);
+        }
+      } catch (e: any) {
+        this.logger.error('Failed to fetch SBCtelco call_trace for dialer JSON log', { callId, error: e?.message });
+      }
+    } else if (callerNormalized && calledNormalized) {
+      out.push(`--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] --- NOT FOUND ---`);
+      out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
+      out.push(`   Parameters: fdatefrom=${fdatefrom}, fcaller=${callerNormalized}, fcalled=${calledNormalized}, fcallerd_type=1`);
+      out.push(`---`);
+    }
+
+    return {
+      success: true,
+      events,
+      ...(out.length ? { log: out.join('\n') } : {}),
+      ...(sipCallId ? { sipCallId } : {}),
+      ...(vmCall?.ID ? { cdrId: String(vmCall.ID) } : {}),
+      ...(vmCall?.calldate ? { calldate: String(vmCall.calldate).slice(0, 10) } : {}),
+    };
   }
 
   private getApiUrl(callId: string): string {
