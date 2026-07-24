@@ -24,6 +24,16 @@ mysql -h<MANAGER_DB_HOST> -u<MANAGER_DB_USERNAME> -p sbclogs -e \
 
 Переменная окружения **`SESSION_SECRET`** — секрет для подписи cookie-сессий (HMAC-SHA256, без внешнего session-store). **Обязательно задать своё значение на проде** (`.env`, не в git) — без него при каждом рестарте процесса генерируется случайный секрет и все сессии сбрасываются. Сгенерировать: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
 
+⚠️ При ручной вставке пользователя через `ssh host "... -e \"INSERT ... '$HASH' ...\""` (двойной проброс через shell) bcrypt-хэш (`$2b$12$...`) может быть искалечен — удалённый shell заново парсит `$2b`, `$12` и т.д. как переменные (`$2`, `$1`) и вырезает их. Правильно — через файл: положить SQL в `.sql`-файл и выполнить `mysql ... < file.sql` (или `docker exec -i <container> mysql ... < file.sql`), никакого повторного парсинга `$`.
+
+### Локализация (ru / en / ar)
+
+- Весь HTML-интерфейс переведён на три языка: `src/i18n/translations.ts` (словарь по ключам вида `recording.formTitle`), `src/i18n/lang.ts` (`resolveLang(req)` — определяет язык по `?lang=` или куке `calltracer_lang`, дефолт `ru`), `src/i18n/translate.ts` (`t(lang, key, vars?)` с подстановкой `{var}` и fallback на `ru`, затем на сам ключ).
+- Переключатель языка — в общей шапке (`src/utils/site-header.ts`, `renderSiteHeader(lang, currentPath)`), плюс отдельно на странице логина. Клик ведёт на `GET /set-lang?lang=xx&redirect=...` (`LangController`) — публичный роут (не требует авторизации), ставит куку на год и редиректит обратно.
+- Арабский — только перевод текста, **без RTL-макета** (`dir="rtl"` не используется, layout остаётся слева-направо).
+- Технические идентификаторы (`mos_min`, `jitter`, `ssrc`, `saddr`, `slot`, `CDR`, `CSR` и т.п.) не переводятся — это имена полей API/аббревиатуры, а не текст интерфейса.
+- Новый текст в HTML-страницах должен идти через `t(lang, 'namespace.key')`, а не хардкодиться — иначе появится непереведённая строка.
+
 ### Трассировка звонков (`CalltraceService`)
 
 - Разбор логов **S2L** и **Dialer** (в т.ч. сценарий `dialer-inbound`), извлечение SIP, событий, INVITE на заданные домены (например `sip.se.didlogic.net`).

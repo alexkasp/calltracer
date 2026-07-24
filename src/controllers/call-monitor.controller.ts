@@ -1,19 +1,25 @@
 import { Controller, Get, Post, Query, Req, Res } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { CallMonitorService } from '../services/call-monitor.service';
+import { renderSiteHeader } from '../utils/site-header';
+import { resolveLang, type Lang } from '../i18n/lang';
+import { t } from '../i18n/translate';
 
 /** Общая навигация по разделам мониторинга (для шапки всех HTML-страниц). */
-const MONITOR_NAV =
-  '<a href="/call-monitor/calls">Звонки</a> · ' +
-  '<a href="/call-monitor/csr">CSR</a> · ' +
-  '<a href="/call-monitor/calls-per-min">Звонков/мин</a> · ' +
-  '<a href="/call-monitor/unsuccess-per-min">Неуспешных/мин</a> · ' +
-  '<a href="/call-monitor/deviation-summary">Отклонения по юзерам</a> · ' +
-  '<a href="/call-monitor/weekly-report">Отчёт за недели</a> · ' +
-  '<a href="/call-monitor/weekly-change-report">Отчёт за 4 нед.</a> · ' +
-  '<a href="/call-monitor/slot-ema">Slot EMA</a> · ' +
-  '<a href="/call-monitor/slot-ema-user">Slot EMA (юзер)</a> · ' +
-  '<a href="/call-monitor/alerts">Alerts</a>';
+function monitorNav(lang: Lang): string {
+  return (
+    `<a href="/call-monitor/calls">${t(lang, 'monitor.nav.calls')}</a> · ` +
+    `<a href="/call-monitor/csr">${t(lang, 'monitor.nav.csr')}</a> · ` +
+    `<a href="/call-monitor/calls-per-min">${t(lang, 'monitor.nav.callsPerMin')}</a> · ` +
+    `<a href="/call-monitor/unsuccess-per-min">${t(lang, 'monitor.nav.unsuccessPerMin')}</a> · ` +
+    `<a href="/call-monitor/deviation-summary">${t(lang, 'monitor.nav.deviation')}</a> · ` +
+    `<a href="/call-monitor/weekly-report">${t(lang, 'monitor.nav.weeklyReport')}</a> · ` +
+    `<a href="/call-monitor/weekly-change-report">${t(lang, 'monitor.nav.weeklyChange')}</a> · ` +
+    `<a href="/call-monitor/slot-ema">${t(lang, 'monitor.nav.slotEma')}</a> · ` +
+    `<a href="/call-monitor/slot-ema-user">${t(lang, 'monitor.nav.slotEmaUser')}</a> · ` +
+    `<a href="/call-monitor/alerts">${t(lang, 'monitor.nav.alerts')}</a>`
+  );
+}
 
 @Controller('call-monitor')
 export class CallMonitorController {
@@ -25,6 +31,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const data = await this.callMonitorService.getSlotEmaAll();
 
     if (format === 'json') {
@@ -46,11 +53,11 @@ export class CallMonitorController {
         .replace(/'/g, '&#039;');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Slot EMA</title>
+  <title>${t(lang, 'monitor.slotEma.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -61,11 +68,12 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>EMA по слотам (30 мин)</h1>
-  <div class="meta">текущий slot: ${data.slot} · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
-  <h2>Dialer</h2>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/slot-ema')}
+  <h1>${t(lang, 'monitor.slotEma.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.currentSlot', { slot: data.slot })} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
+  <h2>${t(lang, 'monitor.dialer')}</h2>
   <pre>${escapeHtml(JSON.stringify(data.dialer, null, 2))}</pre>
-  <h2>S2L</h2>
+  <h2>${t(lang, 'monitor.s2l')}</h2>
   <pre>${escapeHtml(JSON.stringify(data.s2l, null, 2))}</pre>
 </body>
 </html>`;
@@ -85,8 +93,13 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
-    const thresholdPct = Math.max(0, Math.min(100, parseInt(String(thresholdParam ?? '20'), 10) || 20));
-    const data = await this.callMonitorService.getDeviationSummary(thresholdPct);
+    const lang = resolveLang(req);
+    const thresholdPct = Math.max(
+      0,
+      Math.min(100, parseInt(String(thresholdParam ?? '20'), 10) || 20),
+    );
+    const data =
+      await this.callMonitorService.getDeviationSummary(thresholdPct);
 
     if (format === 'json') {
       res?.type('application/json');
@@ -106,55 +119,75 @@ export class CallMonitorController {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
-    const row = (
-      r: { userId: string; currentTotal: number; currentFailed: number; currentFailRate: number; avgFailRate: number | null; deviationPct: number | null; aboveThreshold: boolean },
-    ) =>
-      `<tr class="${r.aboveThreshold ? 'above' : ''}"><td>${escapeHtml(r.userId)}</td><td>${r.currentTotal}</td><td>${r.currentFailed}</td><td>${(r.currentFailRate * 100).toFixed(1)}%</td><td>${r.avgFailRate != null ? (r.avgFailRate * 100).toFixed(1) + '%' : '—'}</td><td>${r.deviationPct != null ? (r.deviationPct >= 0 ? '+' : '') + r.deviationPct.toFixed(1) + ' п.п.' : '—'}</td><td>${r.aboveThreshold ? 'да' : ''}</td></tr>`;
+    const row = (r: {
+      userId: string;
+      currentTotal: number;
+      currentFailed: number;
+      currentFailRate: number;
+      avgFailRate: number | null;
+      deviationPct: number | null;
+      aboveThreshold: boolean;
+    }) =>
+      `<tr class="${r.aboveThreshold ? 'above' : ''}"><td>${escapeHtml(r.userId)}</td><td>${r.currentTotal}</td><td>${r.currentFailed}</td><td>${(r.currentFailRate * 100).toFixed(1)}%</td><td>${r.avgFailRate != null ? (r.avgFailRate * 100).toFixed(1) + '%' : '—'}</td><td>${r.deviationPct != null ? (r.deviationPct >= 0 ? '+' : '') + r.deviationPct.toFixed(1) + ' п.п.' : '—'}</td><td>${r.aboveThreshold ? t(lang, 'monitor.yes') : ''}</td></tr>`;
 
     const summaryDialer =
       data.aboveThresholdDialer.length > 0
         ? data.aboveThresholdDialer
-          .map(
-            (r) =>
-              `${escapeHtml(r.userId)}: +${r.deviationPct.toFixed(1)} п.п. (текущий ${(r.currentFailRate * 100).toFixed(1)}%, норма ${(r.avgFailRate * 100).toFixed(1)}%)`,
-          )
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.deviation.summaryItem', {
+                user: escapeHtml(r.userId),
+                pct: r.deviationPct.toFixed(1),
+                cur: (r.currentFailRate * 100).toFixed(1),
+                avg: (r.avgFailRate * 100).toFixed(1),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
     const summaryS2l =
       data.aboveThresholdS2l.length > 0
         ? data.aboveThresholdS2l
-          .map(
-            (r) =>
-              `${escapeHtml(r.userId)}: +${r.deviationPct.toFixed(1)} п.п. (текущий ${(r.currentFailRate * 100).toFixed(1)}%, норма ${(r.avgFailRate * 100).toFixed(1)}%)`,
-          )
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.deviation.summaryItem', {
+                user: escapeHtml(r.userId),
+                pct: r.deviationPct.toFixed(1),
+                cur: (r.currentFailRate * 100).toFixed(1),
+                avg: (r.avgFailRate * 100).toFixed(1),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
 
     const noCallsDialerStr =
       data.noCallsIn5MinDialer.length > 0
         ? data.noCallsIn5MinDialer
-          .map(
-            (r) =>
-              `${escapeHtml(r.userId)} (норма по слоту: ${r.avgTotal.toFixed(1)} звонков, fail ${(r.avgFailRate * 100).toFixed(1)}%)`,
-          )
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.deviation.noCallsItem', {
+                user: escapeHtml(r.userId),
+                avg: r.avgTotal.toFixed(1),
+                pct: (r.avgFailRate * 100).toFixed(1),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
     const noCallsS2lStr =
       data.noCallsIn5MinS2l.length > 0
         ? data.noCallsIn5MinS2l
-          .map(
-            (r) =>
-              `${escapeHtml(r.userId)} (норма по слоту: ${r.avgTotal.toFixed(1)} звонков, fail ${(r.avgFailRate * 100).toFixed(1)}%)`,
-          )
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.deviation.noCallsItem', {
+                user: escapeHtml(r.userId),
+                avg: r.avgTotal.toFixed(1),
+                pct: (r.avgFailRate * 100).toFixed(1),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Резюме отклонений по пользователям</title>
+  <title>${t(lang, 'monitor.deviation.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -170,33 +203,34 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Резюме: отклонение ≥${data.thresholdPct}% по пользователям</h1>
-  <div class="meta">slot ${data.slot}, окно ${data.windowMinutes} мин · порог ${data.thresholdPct} п.п. · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/deviation-summary')}
+  <h1>${t(lang, 'monitor.deviation.h1', { pct: data.thresholdPct })}</h1>
+  <div class="meta">${t(lang, 'monitor.deviation.metaLine', { slot: data.slot, win: data.windowMinutes, pct: data.thresholdPct })} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
 
   <section>
-    <h2>Пользователи с отклонением ≥${data.thresholdPct} п.п.</h2>
-    <div class="resume"><strong>Dialer:</strong> ${summaryDialer}</div>
-    <div class="resume"><strong>S2L:</strong> ${summaryS2l}</div>
+    <h2>${t(lang, 'monitor.deviation.usersAboveTitle', { pct: data.thresholdPct })}</h2>
+    <div class="resume"><strong>${t(lang, 'monitor.dialer')}:</strong> ${summaryDialer}</div>
+    <div class="resume"><strong>${t(lang, 'monitor.s2l')}:</strong> ${summaryS2l}</div>
   </section>
 
   <section>
-    <h2>Без звонков за 5 мин (были за 60 мин, по слоту есть EMA)</h2>
-    <p class="meta">Пользователи, у которых в отчёте за последние 5 мин звонков не было; для них не считаем fail rate, но показываем норму по слоту.</p>
-    <div class="resume"><strong>Dialer:</strong> ${noCallsDialerStr}</div>
-    <div class="resume"><strong>S2L:</strong> ${noCallsS2lStr}</div>
+    <h2>${t(lang, 'monitor.deviation.noCallsTitle')}</h2>
+    <p class="meta">${t(lang, 'monitor.deviation.noCallsDesc')}</p>
+    <div class="resume"><strong>${t(lang, 'monitor.dialer')}:</strong> ${noCallsDialerStr}</div>
+    <div class="resume"><strong>${t(lang, 'monitor.s2l')}:</strong> ${noCallsS2lStr}</div>
   </section>
 
   <section>
-    <h2>Dialer (все пользователи за последние ${data.windowMinutes} мин)</h2>
+    <h2>${t(lang, 'monitor.deviation.allUsersTitle', { type: t(lang, 'monitor.dialer'), win: data.windowMinutes })}</h2>
     <table>
-      <thead><tr><th>userId</th><th>Звонков</th><th>Неуспешных</th><th>Текущий fail %</th><th>Норма (слот)</th><th>Отклонение (п.п.)</th><th>≥${data.thresholdPct}%</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.userId')}</th><th>${t(lang, 'monitor.col.calls')}</th><th>${t(lang, 'monitor.col.failed')}</th><th>${t(lang, 'monitor.col.currentFailPct')}</th><th>${t(lang, 'monitor.col.slotNorm')}</th><th>${t(lang, 'monitor.col.deviationPP')}</th><th>≥${data.thresholdPct}%</th></tr></thead>
       <tbody>${data.dialer.map((r) => row(r)).join('')}</tbody>
     </table>
   </section>
   <section>
-    <h2>S2L (все пользователи за последние ${data.windowMinutes} мин)</h2>
+    <h2>${t(lang, 'monitor.deviation.allUsersTitle', { type: t(lang, 'monitor.s2l'), win: data.windowMinutes })}</h2>
     <table>
-      <thead><tr><th>userId</th><th>Звонков</th><th>Неуспешных</th><th>Текущий fail %</th><th>Норма (слот)</th><th>Отклонение (п.п.)</th><th>≥${data.thresholdPct}%</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.userId')}</th><th>${t(lang, 'monitor.col.calls')}</th><th>${t(lang, 'monitor.col.failed')}</th><th>${t(lang, 'monitor.col.currentFailPct')}</th><th>${t(lang, 'monitor.col.slotNorm')}</th><th>${t(lang, 'monitor.col.deviationPP')}</th><th>≥${data.thresholdPct}%</th></tr></thead>
       <tbody>${data.s2l.map((r) => row(r)).join('')}</tbody>
     </table>
   </section>
@@ -214,6 +248,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const uid = String(userId ?? '').trim();
     const data = await this.callMonitorService.getSlotEmaByUser(uid);
 
@@ -236,11 +271,11 @@ export class CallMonitorController {
         .replace(/'/g, '&#039;');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Slot EMA (user)</title>
+  <title>${t(lang, 'monitor.slotEmaUser.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -253,15 +288,16 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>EMA по слотам (userId)</h1>
-  <div class="meta">текущий slot: ${data.slot} · <a href="?userId=${encodeURIComponent(uid)}&format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/slot-ema-user')}
+  <h1>${t(lang, 'monitor.slotEmaUser.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.currentSlot', { slot: data.slot })} · <a href="?userId=${encodeURIComponent(uid)}&format=json">JSON</a> · ${monitorNav(lang)}</div>
   <form method="GET" action="/call-monitor/slot-ema-user" style="margin-bottom: 16px;">
     <input name="userId" value="${escapeHtml(uid)}" placeholder="userId" />
-    <button type="submit">Показать</button>
+    <button type="submit">${t(lang, 'monitor.showBtn')}</button>
   </form>
-  <h2>Dialer</h2>
+  <h2>${t(lang, 'monitor.dialer')}</h2>
   <pre>${escapeHtml(JSON.stringify(data.dialer, null, 2))}</pre>
-  <h2>S2L</h2>
+  <h2>${t(lang, 'monitor.s2l')}</h2>
   <pre>${escapeHtml(JSON.stringify(data.s2l, null, 2))}</pre>
 </body>
 </html>`;
@@ -281,8 +317,13 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
-    const thresholdPct = Math.max(0, Math.min(100, parseInt(String(thresholdParam ?? '20'), 10) || 20));
-    const data = await this.callMonitorService.getWeeklyChangeReport4Weeks(thresholdPct);
+    const lang = resolveLang(req);
+    const thresholdPct = Math.max(
+      0,
+      Math.min(100, parseInt(String(thresholdParam ?? '20'), 10) || 20),
+    );
+    const data =
+      await this.callMonitorService.getWeeklyChangeReport4Weeks(thresholdPct);
 
     if (format === 'json') {
       res?.type('application/json');
@@ -302,31 +343,53 @@ export class CallMonitorController {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
-    const weekLabels = data.weekKeys.map((w, i) => (i === 0 ? `${w} (посл.)` : w));
-    const row = (
-      r: { userId: string; last4Weeks: number[]; max: number; lastWeek: number; diff: number; diffPct: number | null; aboveThreshold: boolean },
-    ) =>
-      `<tr class="${r.aboveThreshold ? 'above' : ''}"><td>${escapeHtml(r.userId)}</td>${r.last4Weeks.map((n) => `<td>${n}</td>`).join('')}<td>${r.max}</td><td>${r.lastWeek}</td><td>${r.diff}</td><td>${r.diffPct != null ? r.diffPct.toFixed(1) + '%' : '—'}</td><td>${r.aboveThreshold ? 'да' : ''}</td></tr>`;
+    const weekLabels = data.weekKeys.map((w, i) =>
+      i === 0 ? `${w}${t(lang, 'monitor.weeklyChange.lastWeekSuffix')}` : w,
+    );
+    const row = (r: {
+      userId: string;
+      last4Weeks: number[];
+      max: number;
+      lastWeek: number;
+      diff: number;
+      diffPct: number | null;
+      aboveThreshold: boolean;
+    }) =>
+      `<tr class="${r.aboveThreshold ? 'above' : ''}"><td>${escapeHtml(r.userId)}</td>${r.last4Weeks.map((n) => `<td>${n}</td>`).join('')}<td>${r.max}</td><td>${r.lastWeek}</td><td>${r.diff}</td><td>${r.diffPct != null ? r.diffPct.toFixed(1) + '%' : '—'}</td><td>${r.aboveThreshold ? t(lang, 'monitor.yes') : ''}</td></tr>`;
 
     const summaryDialer =
       data.aboveThresholdDialer.length > 0
         ? data.aboveThresholdDialer
-          .map((r) => `${escapeHtml(r.userId)}: макс ${r.max}, последняя нед. ${r.lastWeek} (−${r.diffPct.toFixed(0)}%)`)
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.weeklyChange.summaryItem', {
+                user: escapeHtml(r.userId),
+                max: r.max,
+                week: r.lastWeek,
+                pct: r.diffPct.toFixed(0),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
     const summaryS2l =
       data.aboveThresholdS2l.length > 0
         ? data.aboveThresholdS2l
-          .map((r) => `${escapeHtml(r.userId)}: макс ${r.max}, последняя нед. ${r.lastWeek} (−${r.diffPct.toFixed(0)}%)`)
-          .join('; ')
-        : 'нет';
+            .map((r) =>
+              t(lang, 'monitor.weeklyChange.summaryItem', {
+                user: escapeHtml(r.userId),
+                max: r.max,
+                week: r.lastWeek,
+                pct: r.diffPct.toFixed(0),
+              }),
+            )
+            .join('; ')
+        : t(lang, 'monitor.none');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Отчёт за 4 недели — изменение по пользователям</title>
+  <title>${t(lang, 'monitor.weeklyChange.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -342,26 +405,27 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Отчёт за 4 недели: изменение звонков по пользователям</h1>
-  <div class="meta">Недели: ${data.weekKeys.join(' → ')} · порог: разница &gt; ${data.thresholdPct}% от последней недели · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/weekly-change-report')}
+  <h1>${t(lang, 'monitor.weeklyChange.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.weeklyChange.metaLine', { weeks: data.weekKeys.join(' → '), pct: data.thresholdPct })} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
 
   <section>
-    <h2>Клиенты с падением ≥${data.thresholdPct}% от последней недели</h2>
-    <div class="resume"><strong>Dialer:</strong> ${summaryDialer}</div>
-    <div class="resume"><strong>S2L:</strong> ${summaryS2l}</div>
+    <h2>${t(lang, 'monitor.weeklyChange.dropTitle', { pct: data.thresholdPct })}</h2>
+    <div class="resume"><strong>${t(lang, 'monitor.dialer')}:</strong> ${summaryDialer}</div>
+    <div class="resume"><strong>${t(lang, 'monitor.s2l')}:</strong> ${summaryS2l}</div>
   </section>
 
   <section>
-    <h2>Dialer</h2>
+    <h2>${t(lang, 'monitor.dialer')}</h2>
     <table>
-      <thead><tr><th>userId</th>${weekLabels.map((w) => `<th>${escapeHtml(w)}</th>`).join('')}<th>Макс</th><th>Посл. нед.</th><th>Разница</th><th>% от последней</th><th>≥${data.thresholdPct}%</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.userId')}</th>${weekLabels.map((w) => `<th>${escapeHtml(w)}</th>`).join('')}<th>${t(lang, 'monitor.col.max')}</th><th>${t(lang, 'monitor.col.lastWeek')}</th><th>${t(lang, 'monitor.col.diff')}</th><th>${t(lang, 'monitor.col.diffPctOfLast')}</th><th>≥${data.thresholdPct}%</th></tr></thead>
       <tbody>${data.dialer.map((r) => row(r)).join('')}</tbody>
     </table>
   </section>
   <section>
-    <h2>S2L</h2>
+    <h2>${t(lang, 'monitor.s2l')}</h2>
     <table>
-      <thead><tr><th>userId</th>${weekLabels.map((w) => `<th>${escapeHtml(w)}</th>`).join('')}<th>Макс</th><th>Посл. нед.</th><th>Разница</th><th>% от последней</th><th>≥${data.thresholdPct}%</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.userId')}</th>${weekLabels.map((w) => `<th>${escapeHtml(w)}</th>`).join('')}<th>${t(lang, 'monitor.col.max')}</th><th>${t(lang, 'monitor.col.lastWeek')}</th><th>${t(lang, 'monitor.col.diff')}</th><th>${t(lang, 'monitor.col.diffPctOfLast')}</th><th>≥${data.thresholdPct}%</th></tr></thead>
       <tbody>${data.s2l.map((r) => row(r)).join('')}</tbody>
     </table>
   </section>
@@ -382,6 +446,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const uid = String(userId ?? '').trim();
     const data = await this.callMonitorService.getWeeklyReportByUser(uid);
 
@@ -403,11 +468,18 @@ export class CallMonitorController {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
-    const table = (rows: Array<{ week: string; total: number; failed: number; lastUpdated: string }>) =>
+    const table = (
+      rows: Array<{
+        week: string;
+        total: number;
+        failed: number;
+        lastUpdated: string;
+      }>,
+    ) =>
       rows.length === 0
-        ? '<p>Нет данных за недели.</p>'
+        ? `<p>${t(lang, 'monitor.weeklyReport.noData')}</p>`
         : `<table>
-      <thead><tr><th>Неделя (пн)</th><th>Всего</th><th>Неуспешных</th><th>Обновлено</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.week')}</th><th>${t(lang, 'monitor.col.total')}</th><th>${t(lang, 'monitor.col.failed')}</th><th>${t(lang, 'monitor.col.updated')}</th></tr></thead>
       <tbody>${rows
         .map(
           (r) =>
@@ -417,11 +489,11 @@ export class CallMonitorController {
     </table>`;
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Отчёт за недели</title>
+  <title>${t(lang, 'monitor.weeklyReport.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1000px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -437,18 +509,19 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Отчёт за недели по пользователю</h1>
-  <div class="meta">Данные накапливаются при каждом запуске крона (звонки за 60 мин приписываются неделе по дате начала) · <a href="?userId=${encodeURIComponent(uid)}&format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/weekly-report')}
+  <h1>${t(lang, 'monitor.weeklyReport.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.weeklyReport.desc')} · <a href="?userId=${encodeURIComponent(uid)}&format=json">JSON</a> · ${monitorNav(lang)}</div>
   <form method="GET" action="/call-monitor/weekly-report" style="margin-bottom: 24px;">
     <input name="userId" value="${escapeHtml(uid)}" placeholder="userId" />
-    <button type="submit">Показать</button>
+    <button type="submit">${t(lang, 'monitor.showBtn')}</button>
   </form>
   <section>
-    <h2>Dialer</h2>
+    <h2>${t(lang, 'monitor.dialer')}</h2>
     ${table(data.dialer)}
   </section>
   <section>
-    <h2>S2L</h2>
+    <h2>${t(lang, 'monitor.s2l')}</h2>
     ${table(data.s2l)}
   </section>
 </body>
@@ -464,11 +537,18 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
-    const data = await this.callMonitorService.getState<Record<string, unknown>>('call_monitor_alerts_snapshot_v1');
+    const lang = resolveLang(req);
+    const data = await this.callMonitorService.getState<
+      Record<string, unknown>
+    >('call_monitor_alerts_snapshot_v1');
 
     // Если снапшота ещё нет — просто покажем текущие состояния из state по ключам (минимально)
-    const dialer = await this.callMonitorService.getState<unknown>('dialer_failrate_alert_state_v1');
-    const s2l = await this.callMonitorService.getState<unknown>('s2l_failrate_alert_state_v1');
+    const dialer = await this.callMonitorService.getState<unknown>(
+      'dialer_failrate_alert_state_v1',
+    );
+    const s2l = await this.callMonitorService.getState<unknown>(
+      's2l_failrate_alert_state_v1',
+    );
     const out = { dialer, s2l, snapshot: data ?? null };
 
     if (format === 'json') {
@@ -489,11 +569,11 @@ export class CallMonitorController {
         .replace(/'/g, '&#039;');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Call Monitor Alerts</title>
+  <title>${t(lang, 'monitor.alerts.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1000px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -504,11 +584,12 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Alerts</h1>
-  <div class="meta"><a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
-  <h2>Dialer</h2>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/alerts')}
+  <h1>${t(lang, 'monitor.alerts.h1')}</h1>
+  <div class="meta"><a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
+  <h2>${t(lang, 'monitor.dialer')}</h2>
   <pre>${escapeHtml(JSON.stringify(out.dialer, null, 2))}</pre>
-  <h2>S2L</h2>
+  <h2>${t(lang, 'monitor.s2l')}</h2>
   <pre>${escapeHtml(JSON.stringify(out.s2l, null, 2))}</pre>
 </body>
 </html>`;
@@ -548,6 +629,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const data = await this.callMonitorService.getCallsData();
 
     if (format === 'json') {
@@ -569,19 +651,21 @@ export class CallMonitorController {
         .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
-    const dialerStr = typeof data.dialer === 'object'
-      ? JSON.stringify(data.dialer, null, 2)
-      : String(data.dialer ?? '—');
-    const s2lStr = typeof data.s2l === 'object'
-      ? JSON.stringify(data.s2l, null, 2)
-      : String(data.s2l ?? '—');
+    const dialerStr =
+      typeof data.dialer === 'object'
+        ? JSON.stringify(data.dialer, null, 2)
+        : String(data.dialer ?? '—');
+    const s2lStr =
+      typeof data.s2l === 'object'
+        ? JSON.stringify(data.s2l, null, 2)
+        : String(data.s2l ?? '—');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Мониторинг звонков</title>
+  <title>${t(lang, 'monitor.calls.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -594,14 +678,15 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Мониторинг звонков</h1>
-  <div class="meta">Dialer и S2L: последние 5 мин · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/calls')}
+  <h1>${t(lang, 'monitor.calls.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.calls.metaLine')} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
   <section>
-    <h2>Dialer (статистика)</h2>
+    <h2>${t(lang, 'monitor.calls.dialerStatsTitle')}</h2>
     <pre>${escapeHtml(dialerStr)}</pre>
   </section>
   <section>
-    <h2>S2L (звонки)</h2>
+    <h2>${t(lang, 'monitor.calls.s2lCallsTitle')}</h2>
     <pre>${escapeHtml(s2lStr)}</pre>
   </section>
 </body>
@@ -621,6 +706,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const data = await this.callMonitorService.getCsr();
 
     if (format === 'json') {
@@ -643,11 +729,11 @@ export class CallMonitorController {
         .replace(/'/g, '&#039;');
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>CSR — Call Success Rate</title>
+  <title>${t(lang, 'monitor.csr.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1200px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -664,33 +750,44 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Call Success Rate (CSR)</h1>
-  <div class="meta">Скользящие окна 5 / 15 / 60 мин · по callStatus · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/csr')}
+  <h1>${t(lang, 'monitor.csr.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.csr.metaLine')} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
   <section>
-    <h2>Dialer</h2>
+    <h2>${t(lang, 'monitor.dialer')}</h2>
     <table>
-      <thead><tr><th>Окно</th><th>Всего</th><th>Успешных</th><th>CSR %</th><th>Неуспешных</th><th>Неуспешных %</th><th>По статусам</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.window')}</th><th>${t(lang, 'monitor.col.total')}</th><th>${t(lang, 'monitor.col.successful')}</th><th>CSR %</th><th>${t(lang, 'monitor.col.failed')}</th><th>${t(lang, 'monitor.col.failedPct')}</th><th>${t(lang, 'monitor.col.byStatus')}</th></tr></thead>
       <tbody>
-        ${[5, 15, 60].map((w) => {
-          const s = data.dialer[String(w)];
-          if (!s) return `<tr><td>${w} мин</td><td colspan="6">—</td></tr>`;
-          const byStr = Object.entries(s.byStatus).map(([k, v]) => `${k}: ${v}`).join(', ');
-          return `<tr><td>${w} мин</td><td>${s.total}</td><td>${s.successCount}</td><td class="csr">${s.csr}%</td><td>${(s as any).failedCount ?? 0}</td><td>${(s as any).failedPercent ?? 0}%</td><td>${escapeHtml(byStr)}</td></tr>`;
-        }).join('')}
+        ${[5, 15, 60]
+          .map((w) => {
+            const s = data.dialer[String(w)];
+            if (!s)
+              return `<tr><td>${w} ${t(lang, 'monitor.min')}</td><td colspan="6">—</td></tr>`;
+            const byStr = Object.entries(s.byStatus)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            return `<tr><td>${w} ${t(lang, 'monitor.min')}</td><td>${s.total}</td><td>${s.successCount}</td><td class="csr">${s.csr}%</td><td>${(s as any).failedCount ?? 0}</td><td>${(s as any).failedPercent ?? 0}%</td><td>${escapeHtml(byStr)}</td></tr>`;
+          })
+          .join('')}
       </tbody>
     </table>
   </section>
   <section>
-    <h2>S2L</h2>
+    <h2>${t(lang, 'monitor.s2l')}</h2>
     <table>
-      <thead><tr><th>Окно</th><th>Всего</th><th>Успешных</th><th>CSR %</th><th>Неуспешных</th><th>Неуспешных %</th><th>По статусам</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.window')}</th><th>${t(lang, 'monitor.col.total')}</th><th>${t(lang, 'monitor.col.successful')}</th><th>CSR %</th><th>${t(lang, 'monitor.col.failed')}</th><th>${t(lang, 'monitor.col.failedPct')}</th><th>${t(lang, 'monitor.col.byStatus')}</th></tr></thead>
       <tbody>
-        ${[5, 15, 60].map((w) => {
-          const s = data.s2l[String(w)];
-          if (!s) return `<tr><td>${w} мин</td><td colspan="6">—</td></tr>`;
-          const byStr = Object.entries(s.byStatus).map(([k, v]) => `${k}: ${v}`).join(', ');
-          return `<tr><td>${w} мин</td><td>${s.total}</td><td>${s.successCount}</td><td class="csr">${s.csr}%</td><td>${(s as any).failedCount ?? 0}</td><td>${(s as any).failedPercent ?? 0}%</td><td>${escapeHtml(byStr)}</td></tr>`;
-        }).join('')}
+        ${[5, 15, 60]
+          .map((w) => {
+            const s = data.s2l[String(w)];
+            if (!s)
+              return `<tr><td>${w} ${t(lang, 'monitor.min')}</td><td colspan="6">—</td></tr>`;
+            const byStr = Object.entries(s.byStatus)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join(', ');
+            return `<tr><td>${w} ${t(lang, 'monitor.min')}</td><td>${s.total}</td><td>${s.successCount}</td><td class="csr">${s.csr}%</td><td>${(s as any).failedCount ?? 0}</td><td>${(s as any).failedPercent ?? 0}%</td><td>${escapeHtml(byStr)}</td></tr>`;
+          })
+          .join('')}
       </tbody>
     </table>
   </section>
@@ -715,6 +812,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const data = await this.callMonitorService.getCallsPerMinStats();
 
     if (format === 'json') {
@@ -747,25 +845,43 @@ export class CallMonitorController {
       return `slot ${slot} (${pad(sh)}:${pad(sm)}–${pad(eh)}:${pad(em)})`;
     };
 
-    const slotInfo = typeof (data as any)?.slot === 'number' ? formatSlot((data as any).slot) : 'slot —';
+    const slotInfo =
+      typeof (data as any)?.slot === 'number'
+        ? formatSlot((data as any).slot)
+        : t(lang, 'monitor.slotFallback');
 
     const WINDOW_MIN = 5;
     const row = (type: string, s: typeof data.dialer) => {
-      const currentInfo = s.currentCount != null ? `${s.currentCount} за ${WINDOW_MIN} мин` : '—';
-      const currentRate = s.currentCount != null ? s.currentCount / WINDOW_MIN : null;
+      const currentInfo =
+        s.currentCount != null
+          ? t(lang, 'monitor.forMinutes', {
+              n: s.currentCount,
+              win: WINDOW_MIN,
+            })
+          : '—';
+      const currentRate =
+        s.currentCount != null ? s.currentCount / WINDOW_MIN : null;
       const currentRateStr = currentRate != null ? currentRate.toFixed(2) : '—';
       // Отклонение: положительное — звонков стало больше, отрицательное — меньше (текущий rate − среднее)
-      const delta = currentRate != null && typeof s.avg === 'number' ? currentRate - s.avg : null;
-      const deltaStr = delta != null ? (delta >= 0 ? `+${delta.toFixed(2)}` : delta.toFixed(2)) : '—';
+      const delta =
+        currentRate != null && typeof s.avg === 'number'
+          ? currentRate - s.avg
+          : null;
+      const deltaStr =
+        delta != null
+          ? delta >= 0
+            ? `+${delta.toFixed(2)}`
+            : delta.toFixed(2)
+          : '—';
       return `<tr><td>${escapeHtml(type)}</td><td>${s.avg}</td><td>${currentRateStr}</td><td>${deltaStr}</td><td>${s.n}</td><td>${currentInfo}</td><td>${s.lastUpdated ?? '—'}</td></tr>`;
     };
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Звонков в минуту — среднее и отклонение</title>
+  <title>${t(lang, 'monitor.callsPerMin.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 900px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -781,14 +897,15 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Звонков в минуту (по типу)</h1>
-  <div class="meta">${escapeHtml(slotInfo)} · среднее (история по крону для этого слота) и текущий rate за окно 5 мин; отклонение = текущий − среднее (отрицательное — звонков меньше, положительное — больше) · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/calls-per-min')}
+  <h1>${t(lang, 'monitor.callsPerMin.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.callsPerMin.metaLine', { slotInfo: escapeHtml(slotInfo) })} · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
   <section>
     <table>
-      <thead><tr><th>Тип</th><th>Среднее (история)</th><th>Текущий (звонков/мин)</th><th>Отклонение</th><th>Измерений (n)</th><th>Текущее за окно</th><th>Обновлено</th></tr></thead>
+      <thead><tr><th>${t(lang, 'monitor.col.type')}</th><th>${t(lang, 'monitor.col.avgHistory')}</th><th>${t(lang, 'monitor.col.currentRate')}</th><th>${t(lang, 'monitor.col.deviation')}</th><th>${t(lang, 'monitor.col.measurements')}</th><th>${t(lang, 'monitor.col.currentWindow')}</th><th>${t(lang, 'monitor.col.updated')}</th></tr></thead>
       <tbody>
-        ${row('Dialer', data.dialer)}
-        ${row('S2L', data.s2l)}
+        ${row(t(lang, 'monitor.dialer'), data.dialer)}
+        ${row(t(lang, 'monitor.s2l'), data.s2l)}
       </tbody>
     </table>
   </section>
@@ -814,6 +931,7 @@ export class CallMonitorController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     if (refresh === '1' || refresh === 'true') {
       await this.callMonitorService.run();
     }
@@ -848,42 +966,52 @@ export class CallMonitorController {
       const em = end % 60;
       return `slot ${slot} (${pad(sh)}:${pad(sm)}–${pad(eh)}:${pad(em)})`;
     };
-    const slotInfo = typeof (data as any)?.slot === 'number' ? formatSlot((data as any).slot) : 'slot —';
+    const slotInfo =
+      typeof (data as any)?.slot === 'number'
+        ? formatSlot((data as any).slot)
+        : t(lang, 'monitor.slotFallback');
 
     const types = ['all', 'outgoing_missed', 'no_answer', 'failed'];
     const typeLabels: Record<string, string> = {
-      all: 'Все неуспешные',
-      outgoing_missed: 'Outgoing missed',
-      no_answer: 'No answer',
-      failed: 'Failed',
+      all: t(lang, 'monitor.typeAll'),
+      outgoing_missed: t(lang, 'monitor.typeOutgoingMissed'),
+      no_answer: t(lang, 'monitor.typeNoAnswer'),
+      failed: t(lang, 'monitor.typeFailed'),
     };
 
-    const row = (source: 'dialer' | 's2l', win: string, t: string) => {
-      const s = data[source][win]?.[t];
+    const row = (source: 'dialer' | 's2l', win: string, ty: string) => {
+      const s = data[source][win]?.[ty];
       if (!s) return '';
       const winNum = parseInt(win, 10) || 1;
-      const currentInfo = s.currentCount != null ? `${s.currentCount} за ${winNum} мин` : '—';
-      return `<tr><td>${escapeHtml(typeLabels[t] ?? t)}</td><td>${s.avg}</td><td>${s.deviation}</td><td>${s.n}</td><td>${currentInfo}</td><td>${s.lastUpdated ?? '—'}</td></tr>`;
+      const currentInfo =
+        s.currentCount != null
+          ? t(lang, 'monitor.forMinutes', { n: s.currentCount, win: winNum })
+          : '—';
+      return `<tr><td>${escapeHtml(typeLabels[ty] ?? ty)}</td><td>${s.avg}</td><td>${s.deviation}</td><td>${s.n}</td><td>${currentInfo}</td><td>${s.lastUpdated ?? '—'}</td></tr>`;
     };
 
     const section = (title: string, source: 'dialer' | 's2l') => `
   <section>
     <h2>${escapeHtml(title)}</h2>
-    ${[5, 15, 60].map((w) => `
-    <h3>Окно ${w} мин</h3>
+    ${[5, 15, 60]
+      .map(
+        (w) => `
+    <h3>${t(lang, 'monitor.windowMinutes', { w })}</h3>
     <table>
-      <thead><tr><th>Тип</th><th>Среднее (неуспешных/мин)</th><th>Отклонение</th><th>n</th><th>Текущее за окно</th><th>Обновлено</th></tr></thead>
-      <tbody>${types.map((t) => row(source, String(w), t)).join('')}</tbody>
+      <thead><tr><th>${t(lang, 'monitor.col.type')}</th><th>${t(lang, 'monitor.col.avgFailedPerMin')}</th><th>${t(lang, 'monitor.col.deviation')}</th><th>n</th><th>${t(lang, 'monitor.col.currentWindow')}</th><th>${t(lang, 'monitor.col.updated')}</th></tr></thead>
+      <tbody>${types.map((ty) => row(source, String(w), ty)).join('')}</tbody>
     </table>
-    `).join('')}
+    `,
+      )
+      .join('')}
   </section>`;
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Неуспешных в минуту</title>
+  <title>${t(lang, 'monitor.unsuccessPerMin.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; max-width: 1000px; margin: 0 auto; }
     h1 { font-size: 1.5rem; margin-bottom: 8px; }
@@ -899,10 +1027,11 @@ export class CallMonitorController {
   </style>
 </head>
 <body>
-  <h1>Неуспешных звонков в минуту</h1>
-  <div class="meta">${escapeHtml(slotInfo)} · среднее и отклонение по окнам 5/15/60 для этого слота; при отсутствии сохранённой истории среднее и «текущее за окно» считаются по данным API (отклонение = 0) · <a href="?refresh=1">Обновить из API</a> · <a href="?format=json">JSON</a> · ${MONITOR_NAV}</div>
-  ${section('Dialer', 'dialer')}
-  ${section('S2L', 's2l')}
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-monitor/unsuccess-per-min')}
+  <h1>${t(lang, 'monitor.unsuccessPerMin.h1')}</h1>
+  <div class="meta">${t(lang, 'monitor.unsuccessPerMin.metaLine', { slotInfo: escapeHtml(slotInfo) })} · <a href="?refresh=1">${t(lang, 'monitor.refreshFromApi')}</a> · <a href="?format=json">JSON</a> · ${monitorNav(lang)}</div>
+  ${section(t(lang, 'monitor.dialer'), 'dialer')}
+  ${section(t(lang, 'monitor.s2l'), 's2l')}
   <section>
     <h2>JSON</h2>
     <pre>${escapeHtml(JSON.stringify(data, null, 2))}</pre>

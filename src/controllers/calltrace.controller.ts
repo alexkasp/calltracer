@@ -1,6 +1,9 @@
 import { Controller, Get, Param, Query, Res, Req } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { CalltraceService } from '../services/calltrace.service';
+import { renderSiteHeader } from '../utils/site-header';
+import { resolveLang } from '../i18n/lang';
+import { t } from '../i18n/translate';
 
 @Controller('calltrace')
 export class CalltraceController {
@@ -13,6 +16,7 @@ export class CalltraceController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const result = await this.calltraceService.getCallTrace(id);
     const data: any = result?.data ?? {};
 
@@ -43,7 +47,8 @@ export class CalltraceController {
 
     // По умолчанию возвращаем HTML для браузера
     const acceptHeader = req?.headers?.accept || '';
-    const isApiRequest = acceptHeader.includes('application/json') || format === 'json';
+    const isApiRequest =
+      acceptHeader.includes('application/json') || format === 'json';
 
     if (isApiRequest) {
       res?.type('application/json');
@@ -63,16 +68,31 @@ export class CalltraceController {
     const formatText = (text: string): string => {
       return escapeHtml(text)
         .replace(/\n/g, '<br>')
-        .replace(/--- ([^-]+) ---/g, '<strong style="color: #2563eb;">--- $1 ---</strong>')
-        .replace(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/g, '<span style="color: #059669;">$1</span>')
-        .replace(/(Event: [^|]+)/g, '<span style="color: #dc2626; font-weight: bold;">$1</span>')
-        .replace(/(sipCallId: [^\s|]+)/g, '<span style="color: #7c3aed;">$1</span>')
+        .replace(
+          /--- ([^-]+) ---/g,
+          '<strong style="color: #2563eb;">--- $1 ---</strong>',
+        )
+        .replace(
+          /(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/g,
+          '<span style="color: #059669;">$1</span>',
+        )
+        .replace(
+          /(Event: [^|]+)/g,
+          '<span style="color: #dc2626; font-weight: bold;">$1</span>',
+        )
+        .replace(
+          /(sipCallId: [^\s|]+)/g,
+          '<span style="color: #7c3aed;">$1</span>',
+        )
         .replace(/(ID: \d+)/g, '<span style="color: #ea580c;">$1</span>')
-        .replace(/(From: [^->]+ -> To: [^\n]+)/g, '<span style="color: #0891b2;">$1</span>');
+        .replace(
+          /(From: [^->]+ -> To: [^\n]+)/g,
+          '<span style="color: #0891b2;">$1</span>',
+        );
     };
 
     let html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -133,20 +153,21 @@ export class CalltraceController {
   </style>
 </head>
 <body>
+  ${renderSiteHeader(lang, req?.originalUrl || '/')}
   <div class="header">
-    <h1>Call Trace</h1>
+    <h1>${t(lang, 'calltrace.title')}</h1>
     <div class="header-info">
-      <strong>Call ID:</strong> ${escapeHtml(result?.callId || '')}<br>
-      <strong>Call Type:</strong> ${escapeHtml(result?.callType || 'unknown')}<br>
-      ${data?.sipCallId ? `<strong>SIP Call ID:</strong> ${escapeHtml(data.sipCallId)}<br>` : ''}
-      <strong>Format:</strong> <a href="?format=json">JSON</a> | <a href="?format=text">Text</a>
+      <strong>${t(lang, 'calltrace.callId')}</strong> ${escapeHtml(result?.callId || '')}<br>
+      <strong>${t(lang, 'calltrace.callType')}</strong> ${escapeHtml(result?.callType || t(lang, 'calltrace.unknown'))}<br>
+      ${data?.sipCallId ? `<strong>${t(lang, 'calltrace.sipCallId')}</strong> ${escapeHtml(data.sipCallId)}<br>` : ''}
+      <strong>${t(lang, 'calltrace.format')}</strong> <a href="?format=json">JSON</a> | <a href="?format=text">Text</a>
     </div>
   </div>`;
 
     if (typeof data?.events === 'string' && data.events.trim()) {
       html += `
   <div class="section">
-    <div class="section-title">Events</div>
+    <div class="section-title">${t(lang, 'calltrace.events')}</div>
     <div class="content">${formatText(data.events)}</div>
   </div>`;
     }
@@ -154,7 +175,7 @@ export class CalltraceController {
     if (typeof data?.log === 'string' && data.log.trim()) {
       html += `
   <div class="section">
-    <div class="section-title">Log</div>
+    <div class="section-title">${t(lang, 'calltrace.log')}</div>
     <div class="content">${formatText(data.log)}</div>
   </div>`;
     }

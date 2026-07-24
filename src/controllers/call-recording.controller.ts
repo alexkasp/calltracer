@@ -1,8 +1,18 @@
-import { Controller, Get, Query, Res, BadRequestException } from '@nestjs/common';
-import type { Response } from 'express';
+import {
+  Controller,
+  Get,
+  Query,
+  Req,
+  Res,
+  BadRequestException,
+} from '@nestjs/common';
+import type { Request, Response } from 'express';
 import { gunzipSync } from 'zlib';
 import { VoipmonitorService } from '../services/voipmonitor.service';
+import { renderSiteHeader } from '../utils/site-header';
 import { CalltraceService } from '../services/calltrace.service';
+import { resolveLang } from '../i18n/lang';
+import { t } from '../i18n/translate';
 
 /** Внутренний call-trace id (дайлер "1784891602.0026156" или S2L-хэш) — в отличие от SIP Call-ID/fbasename VoIPmonitor. */
 function looksLikeCallTraceId(id: string): boolean {
@@ -14,10 +24,18 @@ function looksLikeCallTraceId(id: string): boolean {
  * независимо от того, gzip это, zip (склеенные плечи) или сырой pcap — поэтому
  * реальный формат определяем по magic-байтам, а не по заголовку ответа.
  */
-function unwrapPcap(data: Buffer): { data: Buffer; ext: string; contentType: string } {
+function unwrapPcap(data: Buffer): {
+  data: Buffer;
+  ext: string;
+  contentType: string;
+} {
   const isGzip = data.length >= 2 && data[0] === 0x1f && data[1] === 0x8b;
   if (isGzip) {
-    return { data: gunzipSync(data), ext: 'pcap', contentType: 'application/vnd.tcpdump.pcap' };
+    return {
+      data: gunzipSync(data),
+      ext: 'pcap',
+      contentType: 'application/vnd.tcpdump.pcap',
+    };
   }
   const isZip = data.length >= 2 && data[0] === 0x50 && data[1] === 0x4b;
   if (isZip) {
@@ -69,30 +87,37 @@ export class CallRecordingController {
   ) {}
 
   @Get()
-  form(@Query('callid') callid?: string, @Query('calldate') calldate?: string, @Res({ passthrough: true }) res?: Response) {
+  form(
+    @Query('callid') callid?: string,
+    @Query('calldate') calldate?: string,
+    @Req() req?: Request,
+    @Res({ passthrough: true }) res?: Response,
+  ) {
+    const lang = resolveLang(req);
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Прослушивание звонка (RTP)</title>
+  <title>${t(lang, 'recording.formTitle')}</title>
   <style>${PAGE_STYLE}</style>
 </head>
 <body>
-  <h1>Прослушивание звонка по Call-ID</h1>
-  <div class="meta">Поиск pcap-дампа/аудиозаписи в VoIPmonitor. Можно указать SIP Call-ID (fbasename) или call-trace id из дайлера/S2L (например <code>1784891602.0026156</code>) — он резолвится автоматически.</div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-recording')}
+  <h1>${t(lang, 'recording.formH1')}</h1>
+  <div class="meta">${t(lang, 'recording.formDescription', { example: '<code>1784891602.0026156</code>' })}</div>
   <form method="GET" action="/call-recording/player">
     <table style="border:0; margin-bottom: 16px;">
       <tr style="border:0;">
-        <td style="border:0; padding: 4px 8px 4px 0;">Call-ID:</td>
-        <td style="border:0;"><input name="callid" value="${escapeHtml(callid || '')}" placeholder="1784891602.0026156 или SIP Call-ID" required /></td>
+        <td style="border:0; padding: 4px 8px 4px 0;">${t(lang, 'recording.callIdLabel')}</td>
+        <td style="border:0;"><input name="callid" value="${escapeHtml(callid || '')}" placeholder="${t(lang, 'recording.callIdPlaceholder')}" required /></td>
       </tr>
       <tr style="border:0;">
-        <td style="border:0; padding: 4px 8px 4px 0;">Дата звонка (опц.):</td>
+        <td style="border:0; padding: 4px 8px 4px 0;">${t(lang, 'recording.calldateLabel')}</td>
         <td style="border:0;"><input type="date" name="calldate" value="${escapeHtml(calldate || '')}" /></td>
       </tr>
     </table>
-    <button type="submit">Найти и прослушать</button>
+    <button type="submit">${t(lang, 'recording.searchSubmit')}</button>
   </form>
 </body>
 </html>`;
@@ -104,11 +129,13 @@ export class CallRecordingController {
   async player(
     @Query('callid') callid?: string,
     @Query('calldate') calldate?: string,
+    @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     let callId = String(callid || '').trim();
     if (!callId) {
-      throw new BadRequestException('Query param callid is required');
+      throw new BadRequestException(t(lang, 'recording.callIdRequired'));
     }
     const originalQueryId = callId;
     let resolvedCalldate = calldate;
@@ -123,28 +150,43 @@ export class CallRecordingController {
         const data: any = trace?.data;
         if (data?.sipCallId) {
           callId = data.sipCallId;
-          if (!resolvedCalldate && data?.calldate) resolvedCalldate = data.calldate;
+          if (!resolvedCalldate && data?.calldate)
+            resolvedCalldate = data.calldate;
         } else {
-          traceResolutionNotice = `Call-ID "${traceId}" похож на внутренний call-trace id, но звонок в VoIPmonitor по нему не найден (см. /calltrace/${encodeURIComponent(traceId)}).`;
+          traceResolutionNotice = t(lang, 'recording.traceNotFoundNotice', {
+            traceId,
+            link: `/calltrace/${encodeURIComponent(traceId)}`,
+          });
         }
       } catch (error: any) {
-        traceResolutionNotice = `Не удалось распознать "${traceId}" как call-trace id: ${error?.message || error}`;
+        traceResolutionNotice = t(lang, 'recording.traceParseError', {
+          traceId,
+          error: error?.message || error,
+        });
       }
     }
 
-    const fdatefrom = resolvedCalldate ? `${resolvedCalldate} 00:00:00` : '1970-01-01T00:00:00';
+    const fdatefrom = resolvedCalldate
+      ? `${resolvedCalldate} 00:00:00`
+      : '1970-01-01T00:00:00';
 
     let vmCall: any = null;
     let lookupError: string | null = null;
     try {
-      const response = await this.voipmonitorService.getCalls({ limit: 1, fdatefrom, fcallid: callId });
+      const response = await this.voipmonitorService.getCalls({
+        limit: 1,
+        fdatefrom,
+        fcallid: callId,
+      });
       vmCall = response?.results?.[0] ?? null;
     } catch (error: any) {
-      lookupError = error?.message || 'Ошибка поиска звонка в VoIPmonitor';
+      lookupError = error?.message || t(lang, 'recording.vmSearchError');
     }
 
     const cdrId = vmCall?.ID ? String(vmCall.ID) : '';
-    const calldateParam = resolvedCalldate ? `&calldate=${encodeURIComponent(resolvedCalldate)}` : '';
+    const calldateParam = resolvedCalldate
+      ? `&calldate=${encodeURIComponent(resolvedCalldate)}`
+      : '';
 
     const audioSrc = cdrId
       ? `/call-recording/audio?cdrId=${encodeURIComponent(cdrId)}`
@@ -153,40 +195,62 @@ export class CallRecordingController {
       ? `/call-recording/pcap?cdrId=${encodeURIComponent(cdrId)}`
       : `/call-recording/pcap?callid=${encodeURIComponent(callId)}${calldateParam}`;
 
-    const streams: any[] = Array.isArray(vmCall?.allrtpstreams) ? vmCall.allrtpstreams : [];
+    const streams: any[] = Array.isArray(vmCall?.allrtpstreams)
+      ? vmCall.allrtpstreams
+      : [];
     const streamsTable = streams.length
       ? `<table>
-        <thead><tr>${Object.keys(streams[0]).map((k) => `<th>${escapeHtml(k)}</th>`).join('')}</tr></thead>
+        <thead><tr>${Object.keys(streams[0])
+          .map((k) => `<th>${escapeHtml(k)}</th>`)
+          .join('')}</tr></thead>
         <tbody>${streams
-          .map((s) => `<tr>${Object.values(s).map((v) => `<td>${escapeHtml(String(v ?? ''))}</td>`).join('')}</tr>`)
+          .map(
+            (s) =>
+              `<tr>${Object.values(s)
+                .map((v) => `<td>${escapeHtml(String(v ?? ''))}</td>`)
+                .join('')}</tr>`,
+          )
           .join('')}</tbody>
       </table>`
-      : '<p class="meta">Нет данных о RTP-потоках (allrtpstreams) для этого звонка.</p>';
+      : `<p class="meta">${t(lang, 'recording.noStreamsData')}</p>`;
 
     // RTCP-отчёт: агрегаты из CDR (jitter/loss/MOS уже посчитаны VoIPmonitor по реальным RTCP SR/RR) + разбивка по потокам (SSRC)
-    const totalReceived = streams.reduce((sum, s) => sum + (Number(s.received) || 0), 0);
-    const totalLost = streams.reduce((sum, s) => sum + (Number(s.loss) || 0), 0);
+    const totalReceived = streams.reduce(
+      (sum, s) => sum + (Number(s.received) || 0),
+      0,
+    );
+    const totalLost = streams.reduce(
+      (sum, s) => sum + (Number(s.loss) || 0),
+      0,
+    );
     const totalPackets = totalReceived + totalLost;
-    const overallLossPct = totalPackets > 0 ? (totalLost / totalPackets) * 100 : null;
+    const overallLossPct =
+      totalPackets > 0 ? (totalLost / totalPackets) * 100 : null;
+    const msUnit = t(lang, 'rtcp.ms');
+    const secUnit = t(lang, 'rtcp.sec');
 
     const rtcpSummaryTable = vmCall
       ? `<table>
-        <tr><th>MOS (min)</th><td>${escapeHtml(String(vmCall.mos_min ?? '—'))}</td></tr>
-        <tr><th>Jitter (avg)</th><td>${escapeHtml(String(vmCall.jitter ?? '—'))} мс</td></tr>
-        <tr><th>Packet loss</th><td>${vmCall.packet_loss_perc != null ? escapeHtml(String(vmCall.packet_loss_perc)) + '%' : '—'} (${escapeHtml(String(vmCall.lost ?? totalLost ?? '—'))} потеряно)</td></tr>
-        <tr><th>Всего RTP-пакетов</th><td>${totalPackets || '—'}${totalPackets ? ` (получено ${totalReceived}, потеряно ${totalLost}${overallLossPct != null ? `, ${overallLossPct.toFixed(2)}%` : ''})` : ''}</td></tr>
+        <tr><th>${t(lang, 'rtcp.mosMin')}</th><td>${escapeHtml(String(vmCall.mos_min ?? '—'))}</td></tr>
+        <tr><th>${t(lang, 'rtcp.jitterAvg')}</th><td>${escapeHtml(String(vmCall.jitter ?? '—'))} ${msUnit}</td></tr>
+        <tr><th>${t(lang, 'rtcp.packetLoss')}</th><td>${vmCall.packet_loss_perc != null ? escapeHtml(String(vmCall.packet_loss_perc)) + '%' : '—'} (${escapeHtml(String(vmCall.lost ?? totalLost ?? '—'))} ${t(lang, 'rtcp.lost')})</td></tr>
+        <tr><th>${t(lang, 'rtcp.totalPackets')}</th><td>${totalPackets || '—'}${totalPackets ? ` (${t(lang, 'rtcp.received')} ${totalReceived}, ${t(lang, 'rtcp.lost')} ${totalLost}${overallLossPct != null ? `, ${overallLossPct.toFixed(2)}%` : ''})` : ''}</td></tr>
       </table>`
-      : '<p class="meta">Нет данных для RTCP-отчёта — звонок не найден в CDR.</p>';
+      : `<p class="meta">${t(lang, 'rtcp.noData')}</p>`;
 
     const rtcpStreamsTable = streams.length
       ? `<table>
-        <thead><tr><th>#</th><th>Направление</th><th>SSRC</th><th>Пакетов получено</th><th>Потеряно</th><th>Loss %</th><th>Jitter max</th><th>Длительность</th></tr></thead>
+        <thead><tr><th>${t(lang, 'rtcp.col.index')}</th><th>${t(lang, 'rtcp.col.direction')}</th><th>${t(lang, 'rtcp.col.ssrc')}</th><th>${t(lang, 'rtcp.col.received')}</th><th>${t(lang, 'rtcp.col.lost')}</th><th>${t(lang, 'rtcp.col.lossPct')}</th><th>${t(lang, 'rtcp.col.jitterMax')}</th><th>${t(lang, 'rtcp.col.duration')}</th></tr></thead>
         <tbody>${streams
           .map((s) => {
             const received = Number(s.received) || 0;
             const loss = Number(s.loss) || 0;
-            const lossPct = received + loss > 0 ? (loss / (received + loss)) * 100 : 0;
-            const jitterMs = s.maxjitter_mult10 != null ? (Number(s.maxjitter_mult10) / 10).toFixed(1) : '—';
+            const lossPct =
+              received + loss > 0 ? (loss / (received + loss)) * 100 : 0;
+            const jitterMs =
+              s.maxjitter_mult10 != null
+                ? (Number(s.maxjitter_mult10) / 10).toFixed(1)
+                : '—';
             return `<tr>
               <td>${escapeHtml(String(s.index ?? '—'))}</td>
               <td>${escapeHtml(String(s.saddr ?? ''))}:${escapeHtml(String(s.sport ?? ''))} → ${escapeHtml(String(s.daddr ?? ''))}:${escapeHtml(String(s.dport ?? ''))}</td>
@@ -194,80 +258,86 @@ export class CallRecordingController {
               <td>${received}</td>
               <td>${loss}</td>
               <td>${lossPct.toFixed(2)}%</td>
-              <td>${jitterMs} мс</td>
-              <td>${escapeHtml(String(s.duration ?? '—'))} сек</td>
+              <td>${jitterMs} ${msUnit}</td>
+              <td>${escapeHtml(String(s.duration ?? '—'))} ${secUnit}</td>
             </tr>`;
           })
           .join('')}</tbody>
       </table>`
-      : '<p class="meta">Нет данных о RTP-потоках для разбивки по SSRC.</p>';
+      : `<p class="meta">${t(lang, 'rtcp.noStreamsForBreakdown')}</p>`;
 
     const metaRows = vmCall
       ? `
-        <tr><th>ID (cdrId)</th><td>${escapeHtml(cdrId || '—')}</td></tr>
-        <tr><th>Дата звонка</th><td>${escapeHtml(vmCall.calldate || '—')}</td></tr>
-        <tr><th>Caller</th><td>${escapeHtml(vmCall.caller || '—')}</td></tr>
-        <tr><th>Called</th><td>${escapeHtml(vmCall.called || '—')}</td></tr>
-        <tr><th>Длительность</th><td>${escapeHtml(String(vmCall.duration ?? '—'))} сек</td></tr>
-        <tr><th>Codec (A/B)</th><td>${escapeHtml(vmCall.a_codec || '—')} / ${escapeHtml(vmCall.b_codec || '—')}</td></tr>
-        <tr><th>MOS min</th><td>${escapeHtml(String(vmCall.mos_min ?? '—'))}</td></tr>
-        <tr><th>SIP response</th><td>${escapeHtml(vmCall.lastSIPresponse || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.cdrId')}</th><td>${escapeHtml(cdrId || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.calldate')}</th><td>${escapeHtml(vmCall.calldate || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.caller')}</th><td>${escapeHtml(vmCall.caller || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.called')}</th><td>${escapeHtml(vmCall.called || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.duration')}</th><td>${escapeHtml(String(vmCall.duration ?? '—'))} ${secUnit}</td></tr>
+        <tr><th>${t(lang, 'recording.field.codec')}</th><td>${escapeHtml(vmCall.a_codec || '—')} / ${escapeHtml(vmCall.b_codec || '—')}</td></tr>
+        <tr><th>${t(lang, 'recording.field.mosMin')}</th><td>${escapeHtml(String(vmCall.mos_min ?? '—'))}</td></tr>
+        <tr><th>${t(lang, 'recording.field.sipResponse')}</th><td>${escapeHtml(vmCall.lastSIPresponse || '—')}</td></tr>
       `
       : '';
 
     const notFoundNotice = !vmCall
-      ? `<div class="error">Звонок не найден в CDR VoIPmonitor по этому Call-ID${resolvedCalldate ? '' : ' (искали без даты — попробуйте указать дату звонка)'}${lookupError ? `: ${escapeHtml(lookupError)}` : ''}. Аудио и pcap всё равно попробуем получить напрямую по Call-ID.</div>`
+      ? `<div class="error">${t(lang, 'recording.notFoundNotice', {
+          dateHint: resolvedCalldate
+            ? ''
+            : t(lang, 'recording.notFoundDateHint'),
+          errHint: lookupError ? `: ${escapeHtml(lookupError)}` : '',
+        })}</div>`
       : '';
     const traceNotice = traceResolutionNotice
       ? `<div class="error">${escapeHtml(traceResolutionNotice)}</div>`
       : '';
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Звонок ${escapeHtml(callId)}</title>
+  <title>${t(lang, 'recording.playerTitle', { id: escapeHtml(callId) })}</title>
   <style>${PAGE_STYLE}</style>
 </head>
 <body>
-  <h1>Прослушивание звонка</h1>
-  <div class="meta">Call-ID: ${escapeHtml(callId)}${originalQueryId !== callId ? ` (по call-trace id ${escapeHtml(originalQueryId)})` : ''} · <a href="/call-recording">← новый поиск</a></div>
+  ${renderSiteHeader(lang, req?.originalUrl || '/call-recording/player')}
+  <h1>${t(lang, 'recording.playerH1')}</h1>
+  <div class="meta">Call-ID: ${escapeHtml(callId)}${originalQueryId !== callId ? t(lang, 'recording.byTraceId', { id: escapeHtml(originalQueryId) }) : ''} · <a href="/call-recording">${t(lang, 'recording.newSearch')}</a></div>
 
   ${traceNotice}
   ${notFoundNotice}
 
-  ${vmCall ? `<section><h2>Информация о звонке</h2><table>${metaRows}</table></section>` : ''}
+  ${vmCall ? `<section><h2>${t(lang, 'recording.callInfoTitle')}</h2><table>${metaRows}</table></section>` : ''}
 
   <section>
-    <h2>RTP-поток (аудио)</h2>
-    <p class="meta" style="margin-bottom: 12px;">Волна и спектрограмма строятся в браузере (wavesurfer.js) — загрузка занимает ~10–15 сек.</p>
+    <h2>${t(lang, 'recording.audioSectionTitle')}</h2>
+    <p class="meta" style="margin-bottom: 12px;">${t(lang, 'recording.audioLoadHint')}</p>
     <div class="player-box">
       <div id="wave-timeline" class="wave-timeline"></div>
       <div id="wave-form" class="wave-form"></div>
       <div id="wave-spectrogram" class="wave-spectrogram"></div>
       <div class="wave-controls">
-        <button id="wave-play-btn" disabled>▶ Загрузка…</button>
+        <button id="wave-play-btn" disabled>${t(lang, 'recording.loadingBtn')}</button>
         <span id="wave-time" class="wave-time">0:00 / 0:00</span>
       </div>
       <div class="actions">
-        <a href="${audioSrc}&ogg=1">Скачать OGG</a>
-        <a href="${pcapHref}">Скачать PCAP</a>
+        <a href="${audioSrc}&ogg=1">${t(lang, 'recording.downloadOgg')}</a>
+        <a href="${pcapHref}">${t(lang, 'recording.downloadPcap')}</a>
       </div>
     </div>
   </section>
 
   <section>
-    <h2>RTCP-отчёт</h2>
+    <h2>${t(lang, 'rtcp.title')}</h2>
     ${rtcpSummaryTable}
-    <h3 style="font-size: 1rem; color: #a78bfa; margin: 16px 0 8px;">По потокам (SSRC)</h3>
+    <h3 style="font-size: 1rem; color: #a78bfa; margin: 16px 0 8px;">${t(lang, 'rtcp.byStreams')}</h3>
     ${rtcpStreamsTable}
   </section>
 
   <section>
-    <h2>RTP-потоки (сырые данные)</h2>
+    <h2>${t(lang, 'recording.rawStreamsTitle')}</h2>
     <details>
-      <summary style="cursor: pointer; color: #7c3aed; margin-bottom: 8px;">Показать все поля allrtpstreams</summary>
+      <summary style="cursor: pointer; color: #7c3aed; margin-bottom: 8px;">${t(lang, 'recording.showRawFields')}</summary>
       ${streamsTable}
     </details>
   </section>
@@ -315,16 +385,16 @@ export class CallRecordingController {
 
     ws.on('ready', () => {
       playBtn.disabled = false;
-      playBtn.textContent = '▶ Play';
+      playBtn.textContent = ${JSON.stringify(t(lang, 'recording.playBtn'))};
       timeEl.textContent = \`0:00 / \${formatTime(ws.getDuration())}\`;
     });
-    ws.on('play', () => { playBtn.textContent = '⏸ Pause'; });
-    ws.on('pause', () => { playBtn.textContent = '▶ Play'; });
+    ws.on('play', () => { playBtn.textContent = ${JSON.stringify(t(lang, 'recording.pauseBtn'))}; });
+    ws.on('pause', () => { playBtn.textContent = ${JSON.stringify(t(lang, 'recording.playBtn'))}; });
     ws.on('timeupdate', (t) => {
       timeEl.textContent = \`\${formatTime(t)} / \${formatTime(ws.getDuration())}\`;
     });
     ws.on('error', (err) => {
-      playBtn.textContent = 'Ошибка загрузки аудио';
+      playBtn.textContent = ${JSON.stringify(t(lang, 'recording.audioLoadError'))};
       console.error('wavesurfer error', err);
     });
     playBtn.addEventListener('click', () => ws.playPause());
@@ -342,21 +412,24 @@ export class CallRecordingController {
     @Query('callid') callid?: string,
     @Query('calldate') calldate?: string,
     @Query('ogg') ogg?: string,
+    @Req() req?: Request,
     @Res() res?: Response,
   ) {
+    const lang = resolveLang(req);
     if (!cdrId && !callid) {
-      throw new BadRequestException('cdrId or callid is required');
+      throw new BadRequestException(t(lang, 'recording.cdrOrCallidRequired'));
     }
 
-    const { data, contentType } = await this.voipmonitorService.getVoiceRecording({
-      cdrId: cdrId || undefined,
-      callId: !cdrId ? callid : undefined,
-      calldate: !cdrId ? calldate : undefined,
-      // Внимание: VoIPmonitor api.php падает с HTTP 500, если передать cidInterval вместе с cidMerge —
-      // cidMerge сам по себе уже склеивает плечи, cidInterval не нужен (см. тестирование).
-      cidMerge: !cdrId ? true : undefined,
-      ogg: ogg === '1' || ogg === 'true',
-    });
+    const { data, contentType } =
+      await this.voipmonitorService.getVoiceRecording({
+        cdrId: cdrId || undefined,
+        callId: !cdrId ? callid : undefined,
+        calldate: !cdrId ? calldate : undefined,
+        // Внимание: VoIPmonitor api.php падает с HTTP 500, если передать cidInterval вместе с cidMerge —
+        // cidMerge сам по себе уже склеивает плечи, cidInterval не нужен (см. тестирование).
+        cidMerge: !cdrId ? true : undefined,
+        ogg: ogg === '1' || ogg === 'true',
+      });
 
     res!.set('Content-Type', contentType || 'audio/wav');
     res!.set('Cache-Control', 'private, max-age=3600');
@@ -364,9 +437,15 @@ export class CallRecordingController {
   }
 
   @Get('pcap')
-  async pcap(@Query('cdrId') cdrId?: string, @Query('callid') callid?: string, @Res() res?: Response) {
+  async pcap(
+    @Query('cdrId') cdrId?: string,
+    @Query('callid') callid?: string,
+    @Req() req?: Request,
+    @Res() res?: Response,
+  ) {
+    const lang = resolveLang(req);
     if (!cdrId && !callid) {
-      throw new BadRequestException('cdrId or callid is required');
+      throw new BadRequestException(t(lang, 'recording.cdrOrCallidRequired'));
     }
 
     const { data: rawData } = await this.voipmonitorService.getPcapDump({

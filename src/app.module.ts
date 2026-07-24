@@ -25,6 +25,7 @@ import { TelegramNotifyService } from './services/telegram-notify.service';
 import { AuthController } from './controllers/auth.controller';
 import { AuthService } from './services/auth.service';
 import { AuthGuard } from './guards/auth.guard';
+import { LangController } from './controllers/lang.controller';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { AuthGuard } from './guards/auth.guard';
   controllers: [
     AppController,
     AuthController,
+    LangController,
     CalltraceController,
     VoipmonitorController,
     CallRecordingController,

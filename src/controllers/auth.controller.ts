@@ -1,10 +1,12 @@
-import { Controller, Get, Post, Body, Query, Res } from '@nestjs/common';
-import type { Response } from 'express';
+import { Controller, Get, Post, Body, Query, Req, Res } from '@nestjs/common';
+import type { Request, Response } from 'express';
 import {
   AuthService,
   SESSION_COOKIE_NAME,
   SESSION_TTL_MS,
 } from '../services/auth.service';
+import { resolveLang, type Lang } from '../i18n/lang';
+import { t } from '../i18n/translate';
 
 const escapeHtml = (text: string): string =>
   (text || '')
@@ -14,6 +16,13 @@ const escapeHtml = (text: string): string =>
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
 
+const langSwitcher = (lang: Lang, redirectPath: string): string => {
+  const redirect = encodeURIComponent(redirectPath || '/login');
+  const link = (code: Lang, label: string) =>
+    `<a href="/set-lang?lang=${code}&redirect=${redirect}" style="color:${lang === code ? '#eaeaea' : '#7c3aed'};text-decoration:none;font-weight:${lang === code ? 'bold' : 'normal'};">${label}</a>`;
+  return `<div style="display:flex;justify-content:center;gap:8px;margin-bottom:16px;font-size:0.85rem;">${link('ru', 'RU')}<span style="color:#444;">·</span>${link('en', 'EN')}<span style="color:#444;">·</span>${link('ar', 'AR')}</div>`;
+};
+
 @Controller()
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
@@ -22,16 +31,19 @@ export class AuthController {
   loginPage(
     @Query('error') error?: string,
     @Query('redirect') redirect?: string,
+    @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const safeRedirect = redirect && redirect.startsWith('/') ? redirect : '';
+    const currentPath = req?.originalUrl || '/login';
 
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Вход — CallTracer</title>
+  <title>${t(lang, 'login.title')}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; background: #1a1a2e; color: #eaeaea; padding: 20px; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
     .login-box { background: #16213e; padding: 32px; border-radius: 10px; width: 100%; max-width: 340px; }
@@ -45,15 +57,16 @@ export class AuthController {
 </head>
 <body>
   <div class="login-box">
+    ${langSwitcher(lang, currentPath)}
     <h1>CallTracer</h1>
-    ${error ? '<div class="error">Неверный логин или пароль</div>' : ''}
+    ${error ? `<div class="error">${t(lang, 'login.error')}</div>` : ''}
     <form method="POST" action="/login">
-      <label for="username">Логин</label>
+      <label for="username">${t(lang, 'login.username')}</label>
       <input type="text" id="username" name="username" autocomplete="username" required autofocus />
-      <label for="password">Пароль</label>
+      <label for="password">${t(lang, 'login.password')}</label>
       <input type="password" id="password" name="password" autocomplete="current-password" required />
       <input type="hidden" name="redirect" value="${escapeHtml(safeRedirect)}" />
-      <button type="submit">Войти</button>
+      <button type="submit">${t(lang, 'login.submit')}</button>
     </form>
   </div>
 </body>

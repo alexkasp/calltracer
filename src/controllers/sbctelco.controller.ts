@@ -1,6 +1,9 @@
 import { Controller, Get, Query, Res, Req, Param } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { SbctelcoService } from '../services/sbctelco.service';
+import { renderSiteHeader } from '../utils/site-header';
+import { resolveLang } from '../i18n/lang';
+import { t } from '../i18n/translate';
 
 @Controller('sbctelco')
 export class SbctelcoController {
@@ -11,10 +14,12 @@ export class SbctelcoController {
    * saved и ids — только реально добавленные записи, не все полученные по запросу.
    */
   @Get('fetch-and-save')
-  async fetchAndSave() {
-    const { added, ids } = await this.sbctelcoService.fetchAndSaveNewCallsFromLastTwoMinutes();
+  async fetchAndSave(@Req() req?: Request) {
+    const lang = resolveLang(req);
+    const { added, ids } =
+      await this.sbctelcoService.fetchAndSaveNewCallsFromLastTwoMinutes();
     return {
-      message: 'Сохранено в БД sbclogs.sbctrace (звонки за последние 2 минуты)',
+      message: t(lang, 'sbctelco.savedMessage'),
       saved: added,
       ids,
     };
@@ -34,8 +39,10 @@ export class SbctelcoController {
     @Query('timestamp_before') timestamp_before?: string,
     @Query('limit') limit?: string,
     @Query('format') format?: string,
+    @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const hasFilter =
       (calling != null && calling.trim() !== '') ||
       (called != null && called.trim() !== '') ||
@@ -44,7 +51,7 @@ export class SbctelcoController {
     if (!hasFilter) {
       return {
         statusCode: 400,
-        message: 'Укажите хотя бы один фильтр: calling, called, timestamp_after или timestamp_before',
+        message: t(lang, 'sbctelco.missingFilter'),
       };
     }
     const limitNum = limit ? parseInt(limit, 10) : undefined;
@@ -83,10 +90,12 @@ export class SbctelcoController {
   async getSbctraceById(
     @Param('id') id: string,
     @Query('format') format?: string,
+    @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     if (!id || String(id).trim() === '') {
-      return { statusCode: 400, message: 'Invalid id' };
+      return { statusCode: 400, message: t(lang, 'sbctelco.invalidId') };
     }
     const text = await this.sbctelcoService.getTraceLogById(id.trim());
     if (format === 'json') {
@@ -108,6 +117,7 @@ export class SbctelcoController {
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
+    const lang = resolveLang(req);
     const params: {
       nb_result?: number;
       called?: string;
@@ -121,14 +131,21 @@ export class SbctelcoController {
     if (recursive) params.recursive = recursive;
 
     const acceptHeader = req?.headers?.accept || '';
-    const isApiRequest = acceptHeader.includes('application/json') || format === 'json';
+    const isApiRequest =
+      acceptHeader.includes('application/json') || format === 'json';
 
     const raw = await this.sbctelcoService.getCallTrace(params);
 
-    let saveMeta: { saved: number; ids: string[]; lowMosCount: number } | undefined;
+    let saveMeta:
+      | { saved: number; ids: string[]; lowMosCount: number }
+      | undefined;
     if (save === '1' || save === 'true') {
       const r = await this.sbctelcoService.saveTracesFromResponse(raw);
-      saveMeta = { saved: r.saved, ids: r.ids, lowMosCount: r.lowMosEntries.length };
+      saveMeta = {
+        saved: r.saved,
+        ids: r.ids,
+        lowMosCount: r.lowMosEntries.length,
+      };
     }
 
     if (format === 'text') {
@@ -155,12 +172,12 @@ export class SbctelcoController {
         .replace(/&/g, '&amp;')
         .replace(/</g, '&lt;')
         .replace(/>/g, '&gt;')
-        .replace(/\"/g, '&quot;')
+        .replace(/"/g, '&quot;')
         .replace(/'/g, '&#039;');
 
     const text = this.sbctelcoService.formatCallTraceText(raw);
     const html = `<!DOCTYPE html>
-<html lang="ru">
+<html lang="${lang}">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -174,9 +191,10 @@ export class SbctelcoController {
   </style>
 </head>
 <body>
+  ${renderSiteHeader(lang, req?.originalUrl || '/sbctelco/call_trace')}
   <div class="header">
     <div><strong>SBCtelco call_trace</strong></div>
-    <div>Format: <a href="?format=json">JSON</a> | <a href="?format=text">Text</a></div>
+    <div>${t(lang, 'calltrace.format')} <a href="?format=json">JSON</a> | <a href="?format=text">Text</a></div>
   </div>
   <pre>${escapeHtml(text)}</pre>
 </body>
@@ -186,4 +204,3 @@ export class SbctelcoController {
     return html;
   }
 }
-

@@ -2,7 +2,7 @@ import { Injectable, CanActivate, ExecutionContext } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { AuthService, SESSION_COOKIE_NAME } from '../services/auth.service';
 
-const PUBLIC_PATHS = new Set(['/login', '/logout']);
+const PUBLIC_PATHS = new Set(['/login', '/logout', '/set-lang']);
 
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
