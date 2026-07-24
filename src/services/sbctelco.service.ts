@@ -40,23 +40,38 @@ export class SbctelcoService {
   readonly fetchLimit = SBC_FETCH_LIMIT;
 
   private readonly MOS_ALERT_THRESHOLD = (() => {
-    const v = String(process.env.SBC_MOS_ALERT_THRESHOLD ?? '4').trim().replace(',', '.');
+    const v = String(process.env.SBC_MOS_ALERT_THRESHOLD ?? '4')
+      .trim()
+      .replace(',', '.');
     const n = Number(v);
     return Number.isFinite(n) ? n : 4;
   })();
 
-  private readonly baseUrl = process.env.SBCTELCO_BASE_URL || 'http://172.24.121.150:12358';
+  private readonly baseUrl =
+    process.env.SBCTELCO_BASE_URL || 'http://172.24.121.150:12358';
   private readonly username = process.env.SBCTELCO_USER || 'rouser';
   private readonly password = process.env.SBCTELCO_PASS || 'Ro@Sip4u2025';
 
   constructor(
     private readonly httpService: HttpService,
-    @InjectRepository(Sbctrace) private readonly sbctraceRepo: Repository<Sbctrace>,
+    @InjectRepository(Sbctrace)
+    private readonly sbctraceRepo: Repository<Sbctrace>,
     private readonly telegramNotify: TelegramNotifyService,
   ) {}
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
-    const { nb_result = 2, page, called, calling, recursive = 'yes', call_id, leg_id, start, end, call_state } = params || {};
+    const {
+      nb_result = 2,
+      page,
+      called,
+      calling,
+      recursive = 'yes',
+      call_id,
+      leg_id,
+      start,
+      end,
+      call_state,
+    } = params || {};
 
     const qs = new URLSearchParams();
     qs.set('nb_result', String(nb_result));
@@ -92,16 +107,27 @@ export class SbctelcoService {
       const response = await firstValueFrom(
         this.httpService.get(url, {
           auth: { username: this.username, password: this.password },
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
         }),
       );
 
       const data = (response as any)?.data;
       if (!data || typeof data !== 'object') {
         const snippet =
-          typeof data === 'string' ? data.slice(0, 300) : JSON.stringify(data || '').slice(0, 300);
-        this.logger.error('SBCtelco returned non-JSON response', { url, snippet });
-        throw new HttpException('SBCtelco returned non-JSON response', HttpStatus.BAD_GATEWAY);
+          typeof data === 'string'
+            ? data.slice(0, 300)
+            : JSON.stringify(data || '').slice(0, 300);
+        this.logger.error('SBCtelco returned non-JSON response', {
+          url,
+          snippet,
+        });
+        throw new HttpException(
+          'SBCtelco returned non-JSON response',
+          HttpStatus.BAD_GATEWAY,
+        );
       }
 
       return data;
@@ -157,7 +183,9 @@ export class SbctelcoService {
     const t = String(s).trim();
     if (!t) return null;
     // "2026/03/25 10:29:15 +0400" -> "2026-03-25T10:29:15+04:00"
-    const m = t.match(/^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+([+-]\d{2})(\d{2})$/);
+    const m = t.match(
+      /^(\d{4})\/(\d{2})\/(\d{2})\s+(\d{2}:\d{2}:\d{2})(?:\.\d+)?\s+([+-]\d{2})(\d{2})$/,
+    );
     if (m) {
       const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}${m[5]}:${m[6]}`;
       const d = new Date(iso);
@@ -221,11 +249,17 @@ export class SbctelcoService {
    * Для времени звонка из лога возвращает start (минус 5 мин) и end (плюс 1 мин) в UTC+4 для API SBCtelco.
    * callTime — строка даты/времени (например "2026-02-09 08:29:07.319" или "2026-01-26 09:42:41").
    */
-  getStartEndForCallTime(callTime: string): { start: string; end: string } | null {
+  getStartEndForCallTime(
+    callTime: string,
+  ): { start: string; end: string } | null {
     const d = new Date(callTime.trim());
     if (Number.isNaN(d.getTime())) return null;
-    const start = this.formatStartParamUtc4(new Date(d.getTime() - 5 * 60 * 1000));
-    const end = this.formatStartParamUtc4(new Date(d.getTime() + 1 * 60 * 1000));
+    const start = this.formatStartParamUtc4(
+      new Date(d.getTime() - 5 * 60 * 1000),
+    );
+    const end = this.formatStartParamUtc4(
+      new Date(d.getTime() + 1 * 60 * 1000),
+    );
     return { start, end };
   }
 
@@ -234,23 +268,35 @@ export class SbctelcoService {
    * Сохранить в БД только те id, которые не сохранялись в sbctrace за последние 15 минут.
    * Возвращает количество добавленных записей.
    */
-  async fetchAndSaveNewCallsFromLastMinute(): Promise<{ added: number; ids: string[] }> {
+  async fetchAndSaveNewCallsFromLastMinute(): Promise<{
+    added: number;
+    ids: string[];
+  }> {
     const start = this.getStartParamLastTenMinutes();
     return this.fetchAndSaveNewCallsFromStart(start);
   }
 
   /** Active snapshot: раз в минуту обновить/сохранить все активные звонки (с пагинацией). */
-  async fetchAndUpsertActiveSnapshot(): Promise<{ saved: number; ids: string[] }> {
+  async fetchAndUpsertActiveSnapshot(): Promise<{
+    saved: number;
+    ids: string[];
+  }> {
     const raw = await this.getCallTraceAllPages({
       nb_result: this.fetchLimit,
       recursive: 'yes',
       call_state: 'Active',
     });
-    return this.saveTracesFromResponse(raw, { defaultState: 'Active', notifyLowMos: false });
+    return this.saveTracesFromResponse(raw, {
+      defaultState: 'Active',
+      notifyLowMos: false,
+    });
   }
 
   /** Inactive overlap: за окно последних 15 минут, только id не сохранённые за последние 15 минут. */
-  async fetchAndSaveInactiveWithOverlap(): Promise<{ added: number; ids: string[] }> {
+  async fetchAndSaveInactiveWithOverlap(): Promise<{
+    added: number;
+    ids: string[];
+  }> {
     const { start, end } = this.getStartEndParamsLastFifteenMinutes();
     const raw = await this.getCallTraceAllPages({
       nb_result: this.fetchLimit,
@@ -266,7 +312,10 @@ export class SbctelcoService {
    * Забрать у SBCtelco звонки за последние 2 минуты (параметр start) и сохранить в БД только новые (по id).
    * @deprecated Используйте fetchAndSaveNewCallsFromLastMinute.
    */
-  async fetchAndSaveNewCallsFromLastTwoMinutes(): Promise<{ added: number; ids: string[] }> {
+  async fetchAndSaveNewCallsFromLastTwoMinutes(): Promise<{
+    added: number;
+    ids: string[];
+  }> {
     const start = this.getStartParamLastTwoMinutes();
     return this.fetchAndSaveNewCallsFromStart(start);
   }
@@ -275,12 +324,17 @@ export class SbctelcoService {
    * Забрать у SBCtelco звонки за последние 5 минут (параметр start) и сохранить в БД только новые (по id).
    * Возвращает количество добавленных записей.
    */
-  async fetchAndSaveNewCallsFromLastFiveMinutes(): Promise<{ added: number; ids: string[] }> {
+  async fetchAndSaveNewCallsFromLastFiveMinutes(): Promise<{
+    added: number;
+    ids: string[];
+  }> {
     const start = this.getStartParamLastFiveMinutes();
     return this.fetchAndSaveNewCallsFromStart(start);
   }
 
-  private async fetchAndSaveNewCallsFromStart(start: string): Promise<{ added: number; ids: string[] }> {
+  private async fetchAndSaveNewCallsFromStart(
+    start: string,
+  ): Promise<{ added: number; ids: string[] }> {
     const raw = await this.getCallTraceAllPages({
       nb_result: this.fetchLimit,
       recursive: 'yes',
@@ -307,20 +361,27 @@ export class SbctelcoService {
     const recentSet = new Set(recentlySaved.map((r) => r.id));
     const newIds = callKeys.filter((id) => !recentSet.has(id));
     if (newIds.length === 0) return { added: 0, ids: [] };
-    const rawFiltered: Record<string, unknown> = { ...(meta != null && { '***meta***': meta }) };
+    const rawFiltered: Record<string, unknown> = {
+      ...(meta != null && { '***meta***': meta }),
+    };
     for (const id of newIds) rawFiltered[id] = raw[id];
-    const { saved, ids } = await this.saveTracesFromResponse(rawFiltered, { defaultState });
+    const { saved, ids } = await this.saveTracesFromResponse(rawFiltered, {
+      defaultState,
+    });
     return { added: saved, ids };
   }
 
   /** Считывает все страницы call_trace (page=1..N), пока размер страницы == nb_result. */
-  private async getCallTraceAllPages(baseParams: SbctelcoCallTraceParams): Promise<Record<string, unknown>> {
+  private async getCallTraceAllPages(
+    baseParams: SbctelcoCallTraceParams,
+  ): Promise<Record<string, unknown>> {
     const limit = baseParams.nb_result ?? this.fetchLimit;
     const merged: Record<string, unknown> = {};
     let page = 1;
     while (true) {
       const raw = await this.getCallTrace({ ...baseParams, page });
-      if (page === 1 && raw?.['***meta***'] != null) merged['***meta***'] = raw['***meta***'];
+      if (page === 1 && raw?.['***meta***'] != null)
+        merged['***meta***'] = raw['***meta***'];
       const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
       for (const key of callKeys) merged[key] = raw[key];
       if (callKeys.length < limit) break;
@@ -340,7 +401,9 @@ export class SbctelcoService {
       .createQueryBuilder()
       .delete()
       .from(Sbctrace)
-      .where('(call_timestamp IS NOT NULL AND call_timestamp < :cutoff)', { cutoff })
+      .where('(call_timestamp IS NOT NULL AND call_timestamp < :cutoff)', {
+        cutoff,
+      })
       .orWhere('(call_timestamp IS NULL AND created_at < :cutoff)', { cutoff })
       .execute();
     return result.affected ?? 0;
@@ -355,7 +418,11 @@ export class SbctelcoService {
   private resolveRecordId(rawKey: string, callData: any): string {
     const legId = callData?.leg_id != null ? String(callData.leg_id) : null;
     const callId = callData?.call_id != null ? String(callData.call_id) : null;
-    const base = legId ? `leg:${legId}` : callId ? `call:${callId}` : `raw:${rawKey}`;
+    const base = legId
+      ? `leg:${legId}`
+      : callId
+        ? `call:${callId}`
+        : `raw:${rawKey}`;
     return base.slice(0, 64);
   }
 
@@ -365,18 +432,31 @@ export class SbctelcoService {
   ): Promise<{
     saved: number;
     ids: string[];
-    lowMosEntries: Array<{ id: string; calling: string | null; called: string | null; mos: number }>;
+    lowMosEntries: Array<{
+      id: string;
+      calling: string | null;
+      called: string | null;
+      mos: number;
+    }>;
   }> {
     const meta = raw?.['***meta***'];
     const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
     const saved: Sbctrace[] = [];
-    const lowMosEntries: Array<{ id: string; calling: string | null; called: string | null; mos: number }> = [];
+    const lowMosEntries: Array<{
+      id: string;
+      calling: string | null;
+      called: string | null;
+      mos: number;
+    }> = [];
     for (const callId of callKeys) {
       const callData = raw[callId];
       if (!callData || typeof callData !== 'object') continue;
       const mos = parseMosFromCallData(callData);
       const recordId = this.resolveRecordId(callId, callData);
-      const payload: Record<string, unknown> = { ...(meta != null && { '***meta***': meta }), [callId]: callData };
+      const payload: Record<string, unknown> = {
+        ...(meta != null && { '***meta***': meta }),
+        [callId]: callData,
+      };
       const called = (callData as any)?.called;
       const calling = (callData as any)?.calling;
       const legId = (callData as any)?.leg_id;
@@ -389,11 +469,17 @@ export class SbctelcoService {
       const callDurationRaw = (callData as any)?.call_duration;
       // В ответах SBCtelco поле call_duration соответствует времени разговора (talk time), а не общей длительности звонка.
       const talkDurationFromFieldSec =
-        callDurationRaw == null ? null : Number.isFinite(Number(callDurationRaw)) ? Math.floor(Number(callDurationRaw)) : null;
+        callDurationRaw == null
+          ? null
+          : Number.isFinite(Number(callDurationRaw))
+            ? Math.floor(Number(callDurationRaw))
+            : null;
       const existing = await this.sbctraceRepo
         .createQueryBuilder('s')
         .where('s.id = :id', { id: recordId })
-        .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', { legId: legId != null ? String(legId) : '' })
+        .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', {
+          legId: legId != null ? String(legId) : '',
+        })
         .orWhere(externalCallId != null ? 's.call_id = :callId' : '1=0', {
           callId: externalCallId != null ? String(externalCallId) : '',
         })
@@ -405,33 +491,53 @@ export class SbctelcoService {
       entity.calling = calling != null ? String(calling) : null;
       entity.legId = legId != null ? String(legId) : null;
       entity.callId = externalCallId != null ? String(externalCallId) : null;
-      entity.callState = state != null ? String(state) : entity.callState ?? null;
-      entity.terminateReason = terminateReason != null ? String(terminateReason) : entity.terminateReason ?? null;
+      entity.callState =
+        state != null ? String(state) : (entity.callState ?? null);
+      entity.terminateReason =
+        terminateReason != null
+          ? String(terminateReason)
+          : (entity.terminateReason ?? null);
       entity.callTimestamp = callTimestamp;
       entity.connectTimestamp = connectTimestamp;
       entity.lastSeenAt = new Date();
       entity.endTimestamp =
         String(entity.callState).toLowerCase() === 'inactive'
-          ? endTimestampFromTraces ?? entity.endTimestamp ?? new Date()
-          : entity.endTimestamp ?? null;
+          ? (endTimestampFromTraces ?? entity.endTimestamp ?? new Date())
+          : (entity.endTimestamp ?? null);
       // Общая длительность звонка: end - start (если обе даты известны)
       entity.callDurationSec =
         entity.endTimestamp && entity.callTimestamp
-          ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.callTimestamp.getTime()) / 1000))
-          : entity.callDurationSec ?? null;
+          ? Math.max(
+              0,
+              Math.floor(
+                (entity.endTimestamp.getTime() -
+                  entity.callTimestamp.getTime()) /
+                  1000,
+              ),
+            )
+          : (entity.callDurationSec ?? null);
       // Длительность разговора: из call_duration, иначе end - connect
       entity.talkDurationSec =
         talkDurationFromFieldSec != null
           ? talkDurationFromFieldSec
           : entity.endTimestamp && entity.connectTimestamp
-            ? Math.max(0, Math.floor((entity.endTimestamp.getTime() - entity.connectTimestamp.getTime()) / 1000))
-            : entity.talkDurationSec ?? null;
+            ? Math.max(
+                0,
+                Math.floor(
+                  (entity.endTimestamp.getTime() -
+                    entity.connectTimestamp.getTime()) /
+                    1000,
+                ),
+              )
+            : (entity.talkDurationSec ?? null);
       entity.mos = mos;
       saved.push(await this.sbctraceRepo.save(entity));
       if (
         mos != null &&
         mos < this.MOS_ALERT_THRESHOLD &&
-        (!existing || existing.mos == null || existing.mos >= this.MOS_ALERT_THRESHOLD)
+        (!existing ||
+          existing.mos == null ||
+          existing.mos >= this.MOS_ALERT_THRESHOLD)
       ) {
         lowMosEntries.push({
           id: entity.id,
@@ -479,11 +585,17 @@ export class SbctelcoService {
     if (filters.called != null && filters.called.trim() !== '') {
       qb.andWhere('s.called = :called', { called: filters.called.trim() });
     }
-    if (filters.timestamp_after != null && filters.timestamp_after.trim() !== '') {
+    if (
+      filters.timestamp_after != null &&
+      filters.timestamp_after.trim() !== ''
+    ) {
       const d = this.parseTimestampParam(filters.timestamp_after.trim());
       if (d) qb.andWhere('s.call_timestamp >= :tsAfter', { tsAfter: d });
     }
-    if (filters.timestamp_before != null && filters.timestamp_before.trim() !== '') {
+    if (
+      filters.timestamp_before != null &&
+      filters.timestamp_before.trim() !== ''
+    ) {
       const d = this.parseTimestampParam(filters.timestamp_before.trim());
       if (d) qb.andWhere('s.call_timestamp <= :tsBefore', { tsBefore: d });
     }
@@ -502,7 +614,10 @@ export class SbctelcoService {
   async getTraceLogById(id: string): Promise<string> {
     const record = await this.sbctraceRepo.findOne({ where: { id } });
     if (!record) {
-      throw new HttpException(`Sbctrace with id ${id} not found`, HttpStatus.NOT_FOUND);
+      throw new HttpException(
+        `Sbctrace with id ${id} not found`,
+        HttpStatus.NOT_FOUND,
+      );
     }
     return this.formatCallTraceText(record.payload ?? {});
   }
@@ -534,7 +649,7 @@ export class SbctelcoService {
 
       const legId = call?.leg_id;
       const prefix = legId != null ? `[${legId}] ` : `[${key}] `;
-      out.push(`${prefix}=== Звонок ${index + 1} (${legId ?? key}) ===`);
+      out.push(`${prefix}=== Call ${index + 1} (${legId ?? key}) ===`);
 
       // Сначала выводим поля звонка
       const connectTimestamp = call?.connect_timestamp;
@@ -550,16 +665,20 @@ export class SbctelcoService {
       const calling = call?.calling;
 
       if (legId != null) out.push(`${prefix}leg_id: ${legId}`);
-      if (connectTimestamp != null) out.push(`${prefix}connect_timestamp: ${connectTimestamp}`);
+      if (connectTimestamp != null)
+        out.push(`${prefix}connect_timestamp: ${connectTimestamp}`);
       if (protocol != null) out.push(`${prefix}protocol: ${protocol}`);
       if (timestamp != null) out.push(`${prefix}timestamp: ${timestamp}`);
       if (called != null) out.push(`${prefix}called: ${called}`);
       if (calling != null) out.push(`${prefix}calling: ${calling}`);
-      if (terminateReason != null) out.push(`${prefix}terminate_reason: ${terminateReason}`);
-      if (interceptionLeg != null) out.push(`${prefix}interception_leg: ${interceptionLeg}`);
+      if (terminateReason != null)
+        out.push(`${prefix}terminate_reason: ${terminateReason}`);
+      if (interceptionLeg != null)
+        out.push(`${prefix}interception_leg: ${interceptionLeg}`);
       if (nap != null) out.push(`${prefix}nap: ${nap}`);
       if (callId != null) out.push(`${prefix}call_id: ${callId}`);
-      if (callDuration != null) out.push(`${prefix}call_duration: ${callDuration}`);
+      if (callDuration != null)
+        out.push(`${prefix}call_duration: ${callDuration}`);
       if (route != null) out.push(`${prefix}route: ${route}`);
       out.push('');
 
@@ -568,7 +687,11 @@ export class SbctelcoService {
       if (traces && typeof traces === 'object') {
         out.push(`${prefix}--- call_traces ---`);
         const traceEntries = Object.entries(traces).filter(
-          ([k, t]: [string, any]) => k !== '***meta***' && t && typeof t === 'object' && t.order !== undefined,
+          ([k, t]: [string, any]) =>
+            k !== '***meta***' &&
+            t &&
+            typeof t === 'object' &&
+            t.order !== undefined,
         );
         const items = traceEntries
           .map(([, t]) => t)
@@ -586,7 +709,9 @@ export class SbctelcoService {
             if (dir === '1') out.push(`${prefix}--------->`);
             else if (dir === '2') out.push(`${prefix}<--------`);
           }
-          out.push([info, ts, dir, tooltip, leg].filter((v) => v !== '').join(' | '));
+          out.push(
+            [info, ts, dir, tooltip, leg].filter((v) => v !== '').join(' | '),
+          );
         }
       }
 
@@ -596,4 +721,3 @@ export class SbctelcoService {
     return out.join('\n').trim();
   }
 }
-

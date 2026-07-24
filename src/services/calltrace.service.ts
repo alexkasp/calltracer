@@ -1,4 +1,10 @@
-import { Injectable, NotFoundException, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import { firstValueFrom } from 'rxjs';
 import { VoipmonitorService } from './voipmonitor.service';
@@ -8,8 +14,10 @@ import { SbctelcoService } from './sbctelco.service';
 export class CalltraceService {
   private readonly logger = new Logger(CalltraceService.name);
   private readonly apiKey = 'f4cafb7d17a74ce5b082535ecc108533';
-  private readonly ipmaxiApiUrl = 'https://api.ipmaxi.convolo.ai/api/v1/get-call-ai-log';
-  private readonly leadsApiUrl = 'https://api.leads.convolo.ai/api/v1/calls/log';
+  private readonly ipmaxiApiUrl =
+    'https://api.ipmaxi.convolo.ai/api/v1/get-call-ai-log';
+  private readonly leadsApiUrl =
+    'https://api.leads.convolo.ai/api/v1/calls/log';
 
   constructor(
     private readonly httpService: HttpService,
@@ -80,13 +88,19 @@ export class CalltraceService {
     return `https://voipmonitor.brightcall.ai/php/model/sql.php?${queryParams.toString()}`;
   }
 
-  private async formatLog(callType: string, callId: string, data: any): Promise<any> {
+  private async formatLog(
+    callType: string,
+    callId: string,
+    data: any,
+  ): Promise<any> {
     switch (callType) {
       case 'S2L':
       case 'dialer':
         // Один и тот же обработчик (events + log с VoIPmonitor, sbctelco, INVITE и т.д.); callType сохраняем для доработок под тип
         const result = await this.formatS2LLog(callId, data);
-        return result && typeof result === 'object' ? { ...result, callType } : result;
+        return result && typeof result === 'object'
+          ? { ...result, callType }
+          : result;
       default:
         return data;
     }
@@ -96,7 +110,7 @@ export class CalltraceService {
     // Для S2L: debug.log или log; для дайлера (ipmaxi API): pbxLog
     try {
       const logText = data?.debug?.log || data?.log || data?.pbxLog || '';
-      
+
       if (!logText) {
         this.logger.warn('No log text found in S2L response');
         return data;
@@ -109,7 +123,9 @@ export class CalltraceService {
 
       // Входящие dialer-звонки: первая строка содержит "Loading scenario dialer-inbound"
       const firstLine = logText.trim().split('\n')[0] || '';
-      const isDialerInbound = firstLine.includes('Loading scenario dialer-inbound');
+      const isDialerInbound = firstLine.includes(
+        'Loading scenario dialer-inbound',
+      );
 
       // Для dialer-inbound: callId из первого блока -----BEGIN SIP TRACE, первая строка вида "i: <uuid>"
       let dialerInboundSipCallId: string | undefined;
@@ -130,7 +146,9 @@ export class CalltraceService {
       // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом)
       const eventsIndex = logText.indexOf('events:');
       const hasEventsSection = eventsIndex !== -1;
-      const logSectionIndex = hasEventsSection ? logText.indexOf('\n\n log', eventsIndex) : -1;
+      const logSectionIndex = hasEventsSection
+        ? logText.indexOf('\n\n log', eventsIndex)
+        : -1;
 
       let eventsSection: string;
       let logSection: string | null = null;
@@ -153,7 +171,9 @@ export class CalltraceService {
         .filter((line) => !line.includes('null -> null'))
         .map((line) => {
           // Улучшаем читаемость events - форматируем строки вида "2026-01-26 09:42:03.717Z 97124940699 -> 0551870279 s4y1 thr sent to SBC"
-          const eventMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+([^\s]+)\s+->\s+([^\s]+)\s+(.+)$/);
+          const eventMatch = line.match(
+            /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?Z?)\s+([^\s]+)\s+->\s+([^\s]+)\s+(.+)$/,
+          );
           if (eventMatch) {
             return `  ${eventMatch[1]} | From: ${eventMatch[2]} -> To: ${eventMatch[3]} | ${eventMatch[4]}`;
           }
@@ -163,7 +183,9 @@ export class CalltraceService {
 
       const events = `--- EVENTS ---\n${cleanedEventsSection.trim()}\n---`;
       const eventsDateMatch = events.match(/(\d{4}-\d{2}-\d{2})/);
-      const fallbackFdatefrom = eventsDateMatch ? `${eventsDateMatch[1]}T00:00:00` : undefined;
+      const fallbackFdatefrom = eventsDateMatch
+        ? `${eventsDateMatch[1]}T00:00:00`
+        : undefined;
 
       // Секция log: оставляем INVITE sip + связанные "Sent event to JS onPhoneEvent with params"
       let filteredLog: string | undefined;
@@ -179,7 +201,10 @@ export class CalltraceService {
         }
         const voipCache = new Map<string, any | null>();
         const sipHistoryCache = new Map<string, string | null>();
-        const sbctelcoCache = new Map<string, string | { text: string; otherLegId?: string } | null>();
+        const sbctelcoCache = new Map<
+          string,
+          string | { text: string; otherLegId?: string } | null
+        >();
 
         const truncateText = (text: string, maxChars: number) => {
           if (!text) return '';
@@ -187,9 +212,15 @@ export class CalltraceService {
           return `${text.slice(0, maxChars)}\n... [truncated ${text.length - maxChars} chars] ...`;
         };
 
-        const appendSbctelcoTrace = async (calling: string, called: string, callTime?: string | null) => {
+        const appendSbctelcoTrace = async (
+          calling: string,
+          called: string,
+          callTime?: string | null,
+        ) => {
           if (!calling || !called) return;
-          const timeRange = callTime ? this.sbctelcoService.getStartEndForCallTime(callTime) : null;
+          const timeRange = callTime
+            ? this.sbctelcoService.getStartEndForCallTime(callTime)
+            : null;
           const cacheKey = timeRange
             ? `sbctelco_${calling}_${called}_${timeRange.start}_${timeRange.end}`
             : `sbctelco_${calling}_${called}`;
@@ -202,7 +233,10 @@ export class CalltraceService {
                 calling,
                 called,
                 recursive: 'yes',
-                ...(timeRange && { start: timeRange.start, end: timeRange.end }),
+                ...(timeRange && {
+                  start: timeRange.start,
+                  end: timeRange.end,
+                }),
               });
               const text = this.sbctelcoService.formatCallTraceText(raw);
               cached = truncateText(text, 100000);
@@ -225,16 +259,26 @@ export class CalltraceService {
 
           if (cached !== undefined && typeof cached === 'string') {
             const isError = cached.startsWith('ERROR ');
-            const hasNoCallData = !/=== Звонок \d+/.test(cached);
+            const hasNoCallData = !/=== Call \d+/.test(cached);
             if (isError || hasNoCallData) {
-              const timeInfo = timeRange ? `, время: ${timeRange.start} .. ${timeRange.end}` : '';
-              out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
-              out.push(`⚠️  SBCtelco: звонок не найден.`);
-              out.push(`   Поиск: calling=${calling}, called=${called}${timeInfo}`);
-              out.push(`   Итог: ${isError ? cached : 'в ответе нет данных о звонках'}`);
+              const timeInfo = timeRange
+                ? `, time: ${timeRange.start} .. ${timeRange.end}`
+                : '';
+              out.push(
+                `--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`,
+              );
+              out.push(`⚠️  SBCtelco: call not found.`);
+              out.push(
+                `   Search: calling=${calling}, called=${called}${timeInfo}`,
+              );
+              out.push(
+                `   Result: ${isError ? cached : 'no call data in response'}`,
+              );
               out.push(`---`);
             } else {
-              out.push(`--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`);
+              out.push(
+                `--- SBCTELCO [calling: ${calling} -> called: ${called}] ---`,
+              );
               out.push(cached);
               out.push(`---`);
             }
@@ -247,7 +291,12 @@ export class CalltraceService {
           const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
           for (const key of callKeys) {
             const call = raw[key];
-            if (call && typeof call === 'object' && call.other_leg_id != null && String(call.other_leg_id).trim() !== '')
+            if (
+              call &&
+              typeof call === 'object' &&
+              call.other_leg_id != null &&
+              String(call.other_leg_id).trim() !== ''
+            )
               return String(call.other_leg_id).trim();
           }
           return undefined;
@@ -259,7 +308,10 @@ export class CalltraceService {
           if (!sipCallId || !sipCallId.trim()) return;
           const id = sipCallId.trim();
           const cacheKey = `sbctelco_callid_${id}`;
-          let cached = sbctelcoCache.get(cacheKey) as string | { text: string; otherLegId?: string } | undefined;
+          let cached = sbctelcoCache.get(cacheKey) as
+            | string
+            | { text: string; otherLegId?: string }
+            | undefined;
           if (cached === undefined) {
             try {
               const raw = await this.sbctelcoService.getCallTrace({
@@ -271,11 +323,14 @@ export class CalltraceService {
               const otherLegId = getOtherLegIdFromRaw(raw);
               cached = { text: truncateText(text, 100000), otherLegId };
             } catch (e: any) {
-              this.logger.error('Failed to fetch SBCtelco call_trace by call_id', {
-                callId,
-                sipCallId: id,
-                error: e?.message,
-              });
+              this.logger.error(
+                'Failed to fetch SBCtelco call_trace by call_id',
+                {
+                  callId,
+                  sipCallId: id,
+                  error: e?.message,
+                },
+              );
               const errorJson = JSON.stringify({
                 message: e?.message,
                 status: e?.status,
@@ -286,14 +341,22 @@ export class CalltraceService {
             sbctelcoCache.set(cacheKey, cached);
           }
           const mainText = typeof cached === 'string' ? cached : cached?.text;
-          const otherLegId = typeof cached === 'object' && cached && 'otherLegId' in cached ? cached.otherLegId : undefined;
-          const fetchOtherLeg = /^1|true|yes$/i.test(String(process.env.SBC_FETCH_OTHER_LEG ?? '').trim());
+          const otherLegId =
+            typeof cached === 'object' && cached && 'otherLegId' in cached
+              ? cached.otherLegId
+              : undefined;
+          const fetchOtherLeg = /^1|true|yes$/i.test(
+            String(process.env.SBC_FETCH_OTHER_LEG ?? '').trim(),
+          );
           const mainIsError = mainText?.startsWith('ERROR ');
-          const mainHasNoData = !mainText?.trim() || (mainText && !/=== Звонок \d+/.test(mainText));
+          const mainHasNoData =
+            !mainText?.trim() || (mainText && !/=== Call \d+/.test(mainText));
           let pushedAny = false;
           // true — выводим первую и вторую ногу; false — только вторую ногу (по leg_id)
           if (fetchOtherLeg && mainText && !mainIsError && !mainHasNoData) {
-            out.push(`ℹ️  SBCtelco: звонок найден по call_id (не по номерам и времени)`);
+            out.push(
+              `ℹ️  SBCtelco: call found by call_id (not by numbers/time)`,
+            );
             out.push(`--- SBCTELCO [call_id: ${id}] ---`);
             out.push(mainText);
             out.push(`---`);
@@ -301,7 +364,9 @@ export class CalltraceService {
           }
           if (otherLegId) {
             const legCacheKey = `sbctelco_legid_${otherLegId}`;
-            let legCached = sbctelcoCache.get(legCacheKey) as string | undefined;
+            let legCached = sbctelcoCache.get(legCacheKey) as
+              | string
+              | undefined;
             if (legCached === undefined) {
               try {
                 const legRaw = await this.sbctelcoService.getCallTrace({
@@ -309,21 +374,31 @@ export class CalltraceService {
                   leg_id: otherLegId,
                   recursive: 'yes',
                 });
-                legCached = truncateText(this.sbctelcoService.formatCallTraceText(legRaw), 100000);
+                legCached = truncateText(
+                  this.sbctelcoService.formatCallTraceText(legRaw),
+                  100000,
+                );
               } catch (e: any) {
-                this.logger.error('Failed to fetch SBCtelco call_trace by leg_id', {
-                  callId,
-                  legId: otherLegId,
-                  error: e?.message,
-                });
+                this.logger.error(
+                  'Failed to fetch SBCtelco call_trace by leg_id',
+                  {
+                    callId,
+                    legId: otherLegId,
+                    error: e?.message,
+                  },
+                );
                 legCached = `ERROR ${JSON.stringify({ message: e?.message }).replace(/\\"/g, '"')}`;
               }
               sbctelcoCache.set(legCacheKey, legCached);
             }
             const legIsError = legCached?.startsWith('ERROR ');
-            const legHasNoData = !legCached?.trim() || (legCached && !/=== Звонок \d+/.test(legCached));
+            const legHasNoData =
+              !legCached?.trim() ||
+              (legCached && !/=== Call \d+/.test(legCached));
             if (!legIsError && !legHasNoData) {
-              out.push(`ℹ️  SBCtelco: звонок найден по leg_id (не по номерам и времени)`);
+              out.push(
+                `ℹ️  SBCtelco: call found by leg_id (not by numbers/time)`,
+              );
               out.push(`--- SBCTELCO [leg_id: ${otherLegId}] ---`);
               out.push(legCached);
               out.push(`---`);
@@ -332,9 +407,13 @@ export class CalltraceService {
           }
           if (!pushedAny) {
             out.push(`--- SBCTELCO [call_id: ${id}] ---`);
-            out.push(`⚠️  SBCtelco: звонок не найден.`);
-            out.push(`   Поиск: call_id=${id}${otherLegId ? `, затем leg_id=${otherLegId}` : ''}`);
-            out.push(`   Итог: ${mainIsError ? mainText : mainHasNoData ? 'по call_id нет данных' : (otherLegId ? 'по leg_id нет данных или ошибка' : 'нет данных')}`);
+            out.push(`⚠️  SBCtelco: call not found.`);
+            out.push(
+              `   Search: call_id=${id}${otherLegId ? `, then leg_id=${otherLegId}` : ''}`,
+            );
+            out.push(
+              `   Result: ${mainIsError ? mainText : mainHasNoData ? 'no data by call_id' : otherLegId ? 'no data or error by leg_id' : 'no data'}`,
+            );
             out.push(`---`);
           }
         };
@@ -354,7 +433,8 @@ export class CalltraceService {
           let cached = sipHistoryCache.get(cacheKey);
           if (cached === undefined) {
             try {
-              const raw = await this.voipmonitorService.getSipHistoryBriefDataById(idStr);
+              const raw =
+                await this.voipmonitorService.getSipHistoryBriefDataById(idStr);
               // keep it bounded for response size (JSON can be big)
               cached = truncateText(raw, 8000);
             } catch (e: any) {
@@ -382,7 +462,10 @@ export class CalltraceService {
 
         // Сохраняем заголовок "log:" (или "log") если есть
         const firstNonEmpty = logLines.find((l) => l.trim().length > 0);
-        if (firstNonEmpty && (firstNonEmpty.trim() === 'log:' || firstNonEmpty.trim() === 'log')) {
+        if (
+          firstNonEmpty &&
+          (firstNonEmpty.trim() === 'log:' || firstNonEmpty.trim() === 'log')
+        ) {
           out.push(firstNonEmpty.trim());
         } else if (logLines.length > 0 && logLines[0].trim() === '') {
           // часто секция начинается с пустой строки, а затем " log:" — найдём её ниже
@@ -397,7 +480,8 @@ export class CalltraceService {
         // индекс: последние 6 цифр -> полный agentNumber (первое найденное)
         const agentByLast6 = new Map<string, string>();
         // Ожидающий блок для формата sip:number@domain (INVITE уже видели, ждём f: для номера A)
-        let pendingInviteSimple: { called: string; provider: string } | null = null;
+        let pendingInviteSimple: { called: string; provider: string } | null =
+          null;
         // Флаг: после "Notify sending to LeadCM" перед следующим INVITE вывести "call to client"
         let call2client = false;
         let call2clientCapture = false;
@@ -442,7 +526,10 @@ export class CalltraceService {
         const parseInviteLine = (
           userpart: string,
           domain: string,
-        ): { format: 1; callerA: string; calledB: string; provider: string } | { format: 2; calledB: string; domain: string } | null => {
+        ):
+          | { format: 1; callerA: string; calledB: string; provider: string }
+          | { format: 2; calledB: string; domain: string }
+          | null => {
           if (!userpart || !domain) return null;
           const domainLower = domain.toLowerCase();
           const hasUnderscore = userpart.includes('_');
@@ -472,8 +559,12 @@ export class CalltraceService {
         };
 
         // Первый проход: связь sipCallId -> { callerA, calledB } из INVITE (только формат 1)
-        const inviteBySipCallId = new Map<string, { callerA: string; calledB: string }>();
-        let lastInviteNumbers: { callerA: string; calledB: string } | null = null;
+        const inviteBySipCallId = new Map<
+          string,
+          { callerA: string; calledB: string }
+        >();
+        let lastInviteNumbers: { callerA: string; calledB: string } | null =
+          null;
         const pendingSipCallIds: string[] = [];
         for (const line of logLines) {
           const inviteMatch = line.match(/INVITE sip:([^@\s]+)@([^\s]+)/);
@@ -522,7 +613,10 @@ export class CalltraceService {
           }
 
           // Строки с "Terminating request" и "VoxEngine.terminate" — добавляем в вывод
-          if (line.includes('Terminating request') && line.includes('VoxEngine.terminate')) {
+          if (
+            line.includes('Terminating request') &&
+            line.includes('VoxEngine.terminate')
+          ) {
             out.push(line.replace(/\r/g, ''));
           }
 
@@ -532,7 +626,9 @@ export class CalltraceService {
           }
 
           // Строки с "Sent event to JS VoxEngine.customData with params" — добавляем в вывод
-          if (line.includes('Sent event to JS VoxEngine.customData with params')) {
+          if (
+            line.includes('Sent event to JS VoxEngine.customData with params')
+          ) {
             const raw = line.replace(/\r/g, '');
 
             // Извлекаем leadPhone и leadProvider (страна + первый провайдер) и выводим только их
@@ -557,7 +653,8 @@ export class CalltraceService {
             // Пример:
             // "resultCallGroups":[[[24916,"971505721141",0,"Zemfira Agabekova","zemfira@..."]], ...]
             const agents: Array<{ number: string; name: string }> = [];
-            const agentRe = /\[\s*\[\s*\d+\s*,\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"/g;
+            const agentRe =
+              /\[\s*\[\s*\d+\s*,\s*"([^"]+)"\s*,\s*\d+\s*,\s*"([^"]+)"/g;
             let m: RegExpExecArray | null;
             while ((m = agentRe.exec(raw)) !== null) {
               agents.push({ number: m[1], name: m[2] });
@@ -570,7 +667,8 @@ export class CalltraceService {
                   agentNumbersFull.add(fullDigits);
                   if (fullDigits.length >= 6) {
                     const last6 = fullDigits.slice(-6);
-                    if (!agentByLast6.has(last6)) agentByLast6.set(last6, fullDigits);
+                    if (!agentByLast6.has(last6))
+                      agentByLast6.set(last6, fullDigits);
                   }
                 }
                 const key = `${a.number}::${a.name}`;
@@ -601,20 +699,28 @@ export class CalltraceService {
             }
             out.push(line.replace(/\r/g, ''));
             addNextLineAfterSentReceived = false;
-             if(!isInviteLine)
-               continue;
+            if (!isInviteLine) continue;
           }
 
           // До name = Call.Connected/Failed сохраняем строки "дата время Sent:" или "Received:" и следующую за ними (после Notify sending to LeadCM или при dialer + INVITE на didlogic)
           if (call2clientCapture || dialerDidlogicCapture) {
-            if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(trimmed)) {
-              const timeMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+            if (
+              /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?\s+(Sent:|Received:)\s*$/.test(
+                trimmed,
+              )
+            ) {
+              const timeMatch = trimmed.match(
+                /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/,
+              );
               if (timeMatch) currentCallTime = timeMatch[1];
               out.push(line.replace(/\r/g, ''));
               addNextLineAfterSentReceived = true;
               continue;
             }
-            if (line.includes('name = Call.Connected') || line.includes('name = Call.Disconnected')) {
+            if (
+              line.includes('name = Call.Connected') ||
+              line.includes('name = Call.Disconnected')
+            ) {
               call2clientCapture = false;
               dialerDidlogicCapture = false;
             }
@@ -688,13 +794,18 @@ export class CalltraceService {
               currentCalledB = normalizeNumber(parsed.calledB);
             } else if (parsed?.format === 2) {
               // Формат sip:строка1@строка2 — B=строка1, домен=строка2, A из следующей строки f:
-              pendingInviteSimple = { called: parsed.calledB, provider: parsed.domain };
+              pendingInviteSimple = {
+                called: parsed.calledB,
+                provider: parsed.domain,
+              };
               currentCalledB = normalizeNumber(parsed.calledB);
             }
             capture = true;
             foundInviteInLog = true;
 
-            const timeMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+            const timeMatch = line.match(
+              /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/,
+            );
             if (timeMatch) {
               currentCallTime = timeMatch[1];
             }
@@ -711,7 +822,9 @@ export class CalltraceService {
               line.includes('name = Call.Disconnected'))
           ) {
             // Извлекаем ключевые поля из события для упрощения вывода
-            const timeMatch = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/);
+            const timeMatch = line.match(
+              /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?)/,
+            );
             const time = timeMatch ? timeMatch[1] : '';
             const nameMatch = line.match(/name\s*=\s*([^,;]+)/);
             const eventName = nameMatch ? nameMatch[1].trim() : '';
@@ -721,7 +834,7 @@ export class CalltraceService {
             const code = codeMatch ? codeMatch[1] : '';
             const reasonMatch = line.match(/reason\s*=\s*([^,;\]\s}]+)/);
             const reason = reasonMatch ? reasonMatch[1].trim() : '';
-            
+
             // Формируем упрощенную строку события
             const simplifiedEvent = [
               time,
@@ -729,42 +842,53 @@ export class CalltraceService {
               eventSipCallId ? `sipCallId: ${eventSipCallId}` : '',
               code ? `code: ${code}` : '',
               reason ? `reason: ${reason}` : '',
-            ].filter(Boolean).join(' | ');
+            ]
+              .filter(Boolean)
+              .join(' | ');
             out.push(simplifiedEvent);
 
             // Для Call.Failed извлекаем sipCallId (если есть) или используем номера A и B для поиска
             if (line.includes('name = Call.Failed')) {
               const m = line.match(/sipCallId\s*=\s*([^,;\]\s}]+)/);
               const failedSipCallId = m?.[1];
-              
+
               const dateMatch = line.match(/^(\d{4}-\d{2}-\d{2})/);
-              const fdatefrom = dateMatch ? `${dateMatch[1]}T00:00:00` : fallbackFdatefrom;
-              
+              const fdatefrom = dateMatch
+                ? `${dateMatch[1]}T00:00:00`
+                : fallbackFdatefrom;
+
               let vmCall: any | null = null;
-              const cacheKey = failedSipCallId || `failed_${currentCallerA}_${currentCalledB}`;
-              
+              const cacheKey =
+                failedSipCallId || `failed_${currentCallerA}_${currentCalledB}`;
+
               // Проверяем кэш
-              let cachedCall = voipCache.get(cacheKey);
+              const cachedCall = voipCache.get(cacheKey);
               if (cachedCall !== undefined) {
                 vmCall = cachedCall;
               } else {
                 try {
                   if (!fdatefrom) {
-                    this.logger.warn('Cannot query VoIPmonitor for Call.Failed without fdatefrom', {
-                      callId,
-                      sipCallId: failedSipCallId,
-                      callerA: currentCallerA,
-                      calledB: currentCalledB,
-                    });
+                    this.logger.warn(
+                      'Cannot query VoIPmonitor for Call.Failed without fdatefrom',
+                      {
+                        callId,
+                        sipCallId: failedSipCallId,
+                        callerA: currentCallerA,
+                        calledB: currentCalledB,
+                      },
+                    );
                     vmCall = null;
-                    out.push(`VOIPMONITOR Call.Failed error {"message":"missing fdatefrom"}`);
+                    out.push(
+                      `VOIPMONITOR Call.Failed error {"message":"missing fdatefrom"}`,
+                    );
                   } else {
                     if (failedSipCallId) {
                       // Ищем по sipCallId
-                      vmCall = await this.voipmonitorService.findCallBySipCallIdWithDate(
-                        failedSipCallId,
-                        fdatefrom,
-                      );
+                      vmCall =
+                        await this.voipmonitorService.findCallBySipCallIdWithDate(
+                          failedSipCallId,
+                          fdatefrom,
+                        );
                     } else if (currentCallerA && currentCalledB) {
                       // Ищем по номерам A и B
                       const searchUrl = this.buildVoipmonitorSearchUrl({
@@ -784,29 +908,47 @@ export class CalltraceService {
                       vmCall = response?.results?.[0] || null;
                       // Нашли по A/B => ищем в SBCtelco: по call_id если dst_ip = 172.21.231.16, иначе по номерам
                       if (vmCall) {
-                        if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || failedSipCallId)) {
-                          await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || failedSipCallId!);
+                        if (
+                          vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+                          (vmCall.fbasename || vmCall.callid || failedSipCallId)
+                        ) {
+                          await appendSbctelcoTraceByCallId(
+                            vmCall.fbasename ||
+                              vmCall.callid ||
+                              failedSipCallId!,
+                          );
                         } else {
-                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
+                          await appendSbctelcoTrace(
+                            currentCallerA,
+                            currentCalledB,
+                            currentCallTime,
+                          );
                         }
                       } else {
                         // Звонок не найден - добавляем предупреждение с URL
                         out.push(`--- Call not found in VoIPmonitor ---`);
-                        out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
+                        out.push(
+                          `⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`,
+                        );
                         out.push(`   Search URL: ${searchUrl}`);
-                        out.push(`   Parameters: fdatefrom=${fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`);
+                        out.push(
+                          `   Parameters: fdatefrom=${fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`,
+                        );
                         out.push(`---`);
                       }
                     }
                   }
                 } catch (e) {
-                  this.logger.error('Failed to find call in VoIPmonitor for Call.Failed', {
-                    callId,
-                    sipCallId: failedSipCallId,
-                    callerA: currentCallerA,
-                    calledB: currentCalledB,
-                    error: e?.message,
-                  });
+                  this.logger.error(
+                    'Failed to find call in VoIPmonitor for Call.Failed',
+                    {
+                      callId,
+                      sipCallId: failedSipCallId,
+                      callerA: currentCallerA,
+                      calledB: currentCalledB,
+                      error: e?.message,
+                    },
+                  );
                   vmCall = null;
                   const errorJson = JSON.stringify({
                     message: e?.message,
@@ -817,34 +959,64 @@ export class CalltraceService {
                 }
                 voipCache.set(cacheKey, vmCall);
               }
-              
+
               // Вставляем результат в лог в структурированном формате
               if (vmCall) {
-                const displayNumbers = failedSipCallId ? inviteBySipCallId.get(failedSipCallId) : null;
-                const displayCaller = (displayNumbers?.callerA ?? (currentCallerA && currentCalledB ? currentCallerA : null)) ?? (vmCall.caller || 'N/A');
-                const displayCalled = (displayNumbers?.calledB ?? (currentCallerA && currentCalledB ? currentCalledB : null)) ?? (vmCall.called || 'N/A');
-                const searchInfo = failedSipCallId 
-                  ? `sipCallId: ${failedSipCallId}` 
+                const displayNumbers = failedSipCallId
+                  ? inviteBySipCallId.get(failedSipCallId)
+                  : null;
+                const displayCaller =
+                  displayNumbers?.callerA ??
+                  (currentCallerA && currentCalledB ? currentCallerA : null) ??
+                  (vmCall.caller || 'N/A');
+                const displayCalled =
+                  displayNumbers?.calledB ??
+                  (currentCallerA && currentCalledB ? currentCalledB : null) ??
+                  (vmCall.called || 'N/A');
+                const searchInfo = failedSipCallId
+                  ? `sipCallId: ${failedSipCallId}`
                   : `caller: ${currentCallerA}, called: ${currentCalledB}`;
                 out.push(`--- VOIPMONITOR Call.Failed [${searchInfo}] ---`);
                 out.push(`  ID: ${vmCall.ID || 'N/A'}`);
-                out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
-                out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-                out.push(`  Caller: ${displayCaller} -> Called: ${displayCalled}`);
-                out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
-                out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+                out.push(
+                  `  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`,
+                );
+                out.push(
+                  `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
+                );
+                out.push(
+                  `  Caller: ${displayCaller} -> Called: ${displayCalled}`,
+                );
+                out.push(
+                  `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+                );
+                out.push(
+                  `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+                );
                 if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
-                  out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+                  out.push(
+                    `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+                  );
                 }
                 if (vmCall.a_codec || vmCall.b_codec) {
-                  out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+                  out.push(
+                    `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+                  );
                 }
                 out.push(`---`);
 
-                await appendSipHistory(vmCall, `Call.Failed id=${vmCall.ID || 'N/A'}`);
+                await appendSipHistory(
+                  vmCall,
+                  `Call.Failed id=${vmCall.ID || 'N/A'}`,
+                );
                 // Если dst_ip = 172.21.231.16 — ищем в SBCtelco по call_id (fbasename из VoIPmonitor CDR)
-                if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || failedSipCallId)) {
-                  await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || failedSipCallId!);
+                if (
+                  vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+                  (vmCall.fbasename || vmCall.callid || failedSipCallId)
+                ) {
+                  await appendSbctelcoTraceByCallId(
+                    vmCall.fbasename || vmCall.callid || failedSipCallId!,
+                  );
                 }
                 // Дополнительный поиск по номерам A и B (без фильтров по длительности)
                 if (failedSipCallId && currentCallerA && currentCalledB) {
@@ -853,24 +1025,26 @@ export class CalltraceService {
                     let searchFdatefrom = fdatefrom;
                     if (vmCall.calldate) {
                       // Формат: "2026-01-26 09:42:03"
-                      const calldateMatch = vmCall.calldate.match(/(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+                      const calldateMatch = vmCall.calldate.match(
+                        /(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/,
+                      );
                       if (calldateMatch) {
                         const date = calldateMatch[1];
                         let hour = parseInt(calldateMatch[2], 10);
                         const minute = calldateMatch[3];
                         const second = calldateMatch[4];
-                        
+
                         // Добавляем 3 часа
                         hour = (hour + 3) % 24;
                         const hourStr = hour.toString().padStart(2, '0');
                         searchFdatefrom = `${date}T${hourStr}:${minute}:${second}`;
                       }
                     }
-                    
+
                     // Ищем звонок по номерам A и B БЕЗ фильтров по длительности
                     const abCallCacheKey = `ab_failed_${currentCallerA}_${currentCalledB}_${searchFdatefrom}`;
                     let abVmCall = voipCache.get(abCallCacheKey);
-                    
+
                     if (abVmCall === undefined) {
                       if (searchFdatefrom) {
                         const abSearchUrl = this.buildVoipmonitorSearchUrl({
@@ -880,15 +1054,16 @@ export class CalltraceService {
                           fcallerd_type: 1,
                           // НЕ добавляем fdurationgt и fdurationlt
                         });
-                        const abResponse = await this.voipmonitorService.getCalls({
-                          limit: 1,
-                          start: 0,
-                          fdatefrom: searchFdatefrom,
-                          fcaller: currentCallerA,
-                          fcalled: currentCalledB,
-                          fcallerd_type: 1,
-                          // НЕ добавляем fdurationgt и fdurationlt
-                        });
+                        const abResponse =
+                          await this.voipmonitorService.getCalls({
+                            limit: 1,
+                            start: 0,
+                            fdatefrom: searchFdatefrom,
+                            fcaller: currentCallerA,
+                            fcalled: currentCalledB,
+                            fcallerd_type: 1,
+                            // НЕ добавляем fdurationgt и fdurationlt
+                          });
                         abVmCall = abResponse?.results?.[0] || null;
                         // Сохраняем URL в кэш для вывода, если не найден
                         if (!abVmCall) {
@@ -899,65 +1074,114 @@ export class CalltraceService {
                       }
                       voipCache.set(abCallCacheKey, abVmCall);
                     }
-                    
+
                     // Выводим результат поиска по A и B в структурированном формате
                     if (abVmCall) {
-                      out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
+                      out.push(
+                        `--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`,
+                      );
                       out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
-                      out.push(`  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`);
-                      out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
-                      out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
-                      out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
-                      out.push(`  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`);
-                      if (abVmCall.lost || abVmCall.jitter || abVmCall.mos_min) {
-                        out.push(`  Quality: lost=${abVmCall.lost || 0} packets, jitter=${abVmCall.jitter || 0}ms, MOS=${abVmCall.mos_min || 'N/A'}, packet_loss=${abVmCall.packet_loss_perc || 0}%`);
+                      out.push(
+                        `  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`,
+                      );
+                      out.push(
+                        `  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`,
+                      );
+                      out.push(
+                        `  Caller: ${currentCallerA && currentCalledB ? currentCallerA : abVmCall.caller || 'N/A'} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : abVmCall.called || 'N/A'}`,
+                      );
+                      out.push(
+                        `  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`,
+                      );
+                      out.push(
+                        `  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`,
+                      );
+                      if (
+                        abVmCall.lost ||
+                        abVmCall.jitter ||
+                        abVmCall.mos_min
+                      ) {
+                        out.push(
+                          `  Quality: lost=${abVmCall.lost || 0} packets, jitter=${abVmCall.jitter || 0}ms, MOS=${abVmCall.mos_min || 'N/A'}, packet_loss=${abVmCall.packet_loss_perc || 0}%`,
+                        );
                       }
                       if (abVmCall.a_codec || abVmCall.b_codec) {
-                        out.push(`  Codecs: A=${abVmCall.a_codec || 'N/A'}, B=${abVmCall.b_codec || 'N/A'}`);
+                        out.push(
+                          `  Codecs: A=${abVmCall.a_codec || 'N/A'}, B=${abVmCall.b_codec || 'N/A'}`,
+                        );
                       }
                       out.push(`---`);
 
-                        await appendSipHistory(abVmCall, `Additional Search id=${abVmCall.ID || 'N/A'}`);
-                        // Нашли по A/B => ищем в SBCtelco: по call_id (fbasename) если dst_ip = 172.21.231.16, иначе по номерам
-                        if (abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (abVmCall.fbasename || abVmCall.callid)) {
-                          await appendSbctelcoTraceByCallId(abVmCall.fbasename || abVmCall.callid);
-                        } else if (currentCallerA && currentCalledB) {
-                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
-                        }
-                      } else {
-                        const cachedUrl = voipCache.get(`${abCallCacheKey}_url`) as string;
-                        const abSearchUrl = cachedUrl || this.buildVoipmonitorSearchUrl({
+                      await appendSipHistory(
+                        abVmCall,
+                        `Additional Search id=${abVmCall.ID || 'N/A'}`,
+                      );
+                      // Нашли по A/B => ищем в SBCtelco: по call_id (fbasename) если dst_ip = 172.21.231.16, иначе по номерам
+                      if (
+                        abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+                        (abVmCall.fbasename || abVmCall.callid)
+                      ) {
+                        await appendSbctelcoTraceByCallId(
+                          abVmCall.fbasename || abVmCall.callid,
+                        );
+                      } else if (currentCallerA && currentCalledB) {
+                        await appendSbctelcoTrace(
+                          currentCallerA,
+                          currentCalledB,
+                          currentCallTime,
+                        );
+                      }
+                    } else {
+                      const cachedUrl = voipCache.get(
+                        `${abCallCacheKey}_url`,
+                      ) as string;
+                      const abSearchUrl =
+                        cachedUrl ||
+                        this.buildVoipmonitorSearchUrl({
                           fdatefrom: searchFdatefrom || fdatefrom,
                           fcaller: currentCallerA,
                           fcalled: currentCalledB,
                           fcallerd_type: 1,
                         });
-                        out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`);
-                        out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
+                      out.push(
+                        `--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`,
+                      );
+                      out.push(
+                        `⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`,
+                      );
                       out.push(`   Search URL: ${abSearchUrl}`);
-                      out.push(`   Parameters: fdatefrom=${searchFdatefrom || fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`);
+                      out.push(
+                        `   Parameters: fdatefrom=${searchFdatefrom || fdatefrom}, fcaller=${currentCallerA}, fcalled=${currentCalledB}, fcallerd_type=1`,
+                      );
                       out.push(`---`);
                     }
                   } catch (e) {
-                    this.logger.error('Failed to find call in VoIPmonitor by A/B numbers for Call.Failed', {
-                      callId,
-                      callerA: currentCallerA,
-                      calledB: currentCalledB,
-                      error: e?.message,
-                    });
+                    this.logger.error(
+                      'Failed to find call in VoIPmonitor by A/B numbers for Call.Failed',
+                      {
+                        callId,
+                        callerA: currentCallerA,
+                        calledB: currentCalledB,
+                        error: e?.message,
+                      },
+                    );
                     const errorJson = JSON.stringify({
                       message: e?.message,
                       status: e?.status,
                       response: e?.response,
                     }).replace(/\\"/g, '"');
-                    out.push(`VOIPMONITOR caller=${currentCallerA} called=${currentCalledB} error ${errorJson}`);
+                    out.push(
+                      `VOIPMONITOR caller=${currentCallerA} called=${currentCalledB} error ${errorJson}`,
+                    );
                   }
                 }
               } else {
-                const searchInfo = failedSipCallId 
-                  ? `sipCallId: ${failedSipCallId}` 
+                const searchInfo = failedSipCallId
+                  ? `sipCallId: ${failedSipCallId}`
                   : `caller: ${currentCallerA}, called: ${currentCalledB}`;
-                out.push(`--- Call not found in VoIPmonitor ---`);
+                out.push(
+                  `--- Call not found in VoIPmonitor [${searchInfo}] ---`,
+                );
               }
             }
 
@@ -970,31 +1194,43 @@ export class CalltraceService {
                 if (!sipCallId) sipCallId = connectedSipCallId;
 
                 const dateMatch = line.match(/^(\d{4}-\d{2}-\d{2})/);
-                const fdatefrom = dateMatch ? `${dateMatch[1]}T00:00:00` : fallbackFdatefrom;
+                const fdatefrom = dateMatch
+                  ? `${dateMatch[1]}T00:00:00`
+                  : fallbackFdatefrom;
 
                 // Достаём звонок из VoIPmonitor (с кэшем, чтобы не дергать API повторно)
-                let vmCall: any | null | undefined = voipCache.get(connectedSipCallId);
+                let vmCall: any | null | undefined =
+                  voipCache.get(connectedSipCallId);
                 if (vmCall === undefined) {
                   try {
                     if (!fdatefrom) {
-                      this.logger.warn('Cannot query VoIPmonitor without fdatefrom (no date found in logs)', {
-                        callId,
-                        sipCallId: connectedSipCallId,
-                      });
-                      vmCall = null;
-                      out.push(`VOIPMONITOR sipCallId=${connectedSipCallId} error {"message":"missing fdatefrom"}`);
-                    } else {
-                      vmCall = await this.voipmonitorService.findCallBySipCallIdWithDate(
-                        connectedSipCallId,
-                        fdatefrom,
+                      this.logger.warn(
+                        'Cannot query VoIPmonitor without fdatefrom (no date found in logs)',
+                        {
+                          callId,
+                          sipCallId: connectedSipCallId,
+                        },
                       );
+                      vmCall = null;
+                      out.push(
+                        `VOIPMONITOR sipCallId=${connectedSipCallId} error {"message":"missing fdatefrom"}`,
+                      );
+                    } else {
+                      vmCall =
+                        await this.voipmonitorService.findCallBySipCallIdWithDate(
+                          connectedSipCallId,
+                          fdatefrom,
+                        );
                     }
                   } catch (e) {
-                    this.logger.error('Failed to find call in VoIPmonitor by sipCallId', {
-                      callId,
-                      sipCallId: connectedSipCallId,
-                      error: e?.message,
-                    });
+                    this.logger.error(
+                      'Failed to find call in VoIPmonitor by sipCallId',
+                      {
+                        callId,
+                        sipCallId: connectedSipCallId,
+                        error: e?.message,
+                      },
+                    );
                     vmCall = null;
                     // Используем компактный JSON и убираем экранирование
                     const errorJson = JSON.stringify({
@@ -1002,35 +1238,72 @@ export class CalltraceService {
                       status: e?.status,
                       response: e?.response,
                     }).replace(/\\"/g, '"');
-                    out.push(`VOIPMONITOR sipCallId=${connectedSipCallId} error ${errorJson}`);
+                    out.push(
+                      `VOIPMONITOR sipCallId=${connectedSipCallId} error ${errorJson}`,
+                    );
                   }
                   voipCache.set(connectedSipCallId, vmCall);
                 }
 
                 // Вставляем в общий лог сразу после Call.Connected в структурированном формате
                 if (vmCall) {
-                  const displayNumbersConnected = inviteBySipCallId.get(connectedSipCallId);
-                  const displayCallerConnected = (displayNumbersConnected?.callerA ?? (currentCallerA && currentCalledB ? currentCallerA : null)) ?? (vmCall.caller || 'N/A');
-                  const displayCalledConnected = (displayNumbersConnected?.calledB ?? (currentCallerA && currentCalledB ? currentCalledB : null)) ?? (vmCall.called || 'N/A');
-                  out.push(`--- VOIPMONITOR Call.Connected [sipCallId: ${connectedSipCallId}] ---`);
+                  const displayNumbersConnected =
+                    inviteBySipCallId.get(connectedSipCallId);
+                  const displayCallerConnected =
+                    displayNumbersConnected?.callerA ??
+                    (currentCallerA && currentCalledB
+                      ? currentCallerA
+                      : null) ??
+                    (vmCall.caller || 'N/A');
+                  const displayCalledConnected =
+                    displayNumbersConnected?.calledB ??
+                    (currentCallerA && currentCalledB
+                      ? currentCalledB
+                      : null) ??
+                    (vmCall.called || 'N/A');
+                  out.push(
+                    `--- VOIPMONITOR Call.Connected [sipCallId: ${connectedSipCallId}] ---`,
+                  );
                   out.push(`  ID: ${vmCall.ID || 'N/A'}`);
-                  out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
-                  out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-                  out.push(`  Caller: ${displayCallerConnected} -> Called: ${displayCalledConnected}`);
-                  out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
-                  out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+                  out.push(
+                    `  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`,
+                  );
+                  out.push(
+                    `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
+                  );
+                  out.push(
+                    `  Caller: ${displayCallerConnected} -> Called: ${displayCalledConnected}`,
+                  );
+                  out.push(
+                    `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+                  );
+                  out.push(
+                    `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+                  );
                   if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
-                    out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+                    out.push(
+                      `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+                    );
                   }
                   if (vmCall.a_codec || vmCall.b_codec) {
-                    out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+                    out.push(
+                      `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+                    );
                   }
                   out.push(`---`);
 
-                  await appendSipHistory(vmCall, `Call.Connected id=${vmCall.ID || 'N/A'}`);
+                  await appendSipHistory(
+                    vmCall,
+                    `Call.Connected id=${vmCall.ID || 'N/A'}`,
+                  );
                   // Если dst_ip = 172.21.231.16 — ищем в SBCtelco по call_id (fbasename из VoIPmonitor CDR)
-                  if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || connectedSipCallId)) {
-                    await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || connectedSipCallId);
+                  if (
+                    vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+                    (vmCall.fbasename || vmCall.callid || connectedSipCallId)
+                  ) {
+                    await appendSbctelcoTraceByCallId(
+                      vmCall.fbasename || vmCall.callid || connectedSipCallId,
+                    );
                   }
                   // Дополнительный поиск по номерам A и B, если они есть
                   if (currentCallerA && currentCalledB && vmCall.duration) {
@@ -1044,33 +1317,35 @@ export class CalltraceService {
                         const seconds = parseInt(durationMatch[2], 10);
                         durationSeconds = minutes * 60 + seconds;
                       }
-                      
+
                       // Вычисляем фильтры по длительности
                       const fdurationgt = Math.max(0, durationSeconds - 5);
                       const fdurationlt = durationSeconds + 5;
-                      
+
                       // Преобразуем время звонка (+7 часов)
                       let searchFdatefrom = fdatefrom;
                       if (vmCall.calldate) {
                         // Формат: "2026-01-26 09:42:41"
-                        const calldateMatch = vmCall.calldate.match(/(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/);
+                        const calldateMatch = vmCall.calldate.match(
+                          /(\d{4}-\d{2}-\d{2}) (\d{2}):(\d{2}):(\d{2})/,
+                        );
                         if (calldateMatch) {
                           const date = calldateMatch[1];
                           let hour = parseInt(calldateMatch[2], 10);
                           const minute = calldateMatch[3];
                           const second = calldateMatch[4];
-                          
+
                           // Добавляем 3 часа
                           hour = (hour + 3) % 24;
                           const hourStr = hour.toString().padStart(2, '0');
                           searchFdatefrom = `${date}T${hourStr}:${minute}:${second}`;
                         }
                       }
-                      
+
                       // Ищем звонок по номерам A и B с фильтрами по времени и длительности
                       const abCallCacheKey = `ab_${currentCallerA}_${currentCalledB}_${searchFdatefrom}_${fdurationgt}_${fdurationlt}`;
                       let abVmCall = voipCache.get(abCallCacheKey);
-                      
+
                       if (abVmCall === undefined) {
                         if (searchFdatefrom) {
                           const abSearchUrl = this.buildVoipmonitorSearchUrl({
@@ -1081,16 +1356,17 @@ export class CalltraceService {
                             fdurationgt,
                             fdurationlt,
                           });
-                          const abResponse = await this.voipmonitorService.getCalls({
-                            limit: 1,
-                            start: 0,
-                            fdatefrom: searchFdatefrom,
-                            fcaller: currentCallerA,
-                            fcalled: currentCalledB,
-                            fcallerd_type: 1,
-                            fdurationgt,
-                            fdurationlt,
-                          });
+                          const abResponse =
+                            await this.voipmonitorService.getCalls({
+                              limit: 1,
+                              start: 0,
+                              fdatefrom: searchFdatefrom,
+                              fcaller: currentCallerA,
+                              fcalled: currentCalledB,
+                              fcallerd_type: 1,
+                              fdurationgt,
+                              fdurationlt,
+                            });
                           abVmCall = abResponse?.results?.[0] || null;
                           // Сохраняем URL в кэш для вывода, если не найден
                           if (!abVmCall) {
@@ -1101,43 +1377,83 @@ export class CalltraceService {
                         }
                         voipCache.set(abCallCacheKey, abVmCall);
                       }
-                      
+
                       // Выводим результат поиска по A и B в структурированном формате
                       if (abVmCall) {
-                        out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`);
+                        out.push(
+                          `--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] ---`,
+                        );
                         out.push(`  ID: ${abVmCall.ID || 'N/A'}`);
-                        out.push(`  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`);
-                        out.push(`  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`);
-                        out.push(`  Caller: ${currentCallerA && currentCalledB ? currentCallerA : (abVmCall.caller || 'N/A')} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : (abVmCall.called || 'N/A')}`);
-                        out.push(`  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`);
-                        out.push(`  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`);
-                        if (abVmCall.lost || abVmCall.jitter || abVmCall.mos_min) {
-                          out.push(`  Quality: lost=${abVmCall.lost || 0} packets, jitter=${abVmCall.jitter || 0}ms, MOS=${abVmCall.mos_min || 'N/A'}, packet_loss=${abVmCall.packet_loss_perc || 0}%`);
+                        out.push(
+                          `  Call-ID (fbasename): ${abVmCall.fbasename || abVmCall.callid || 'N/A'}`,
+                        );
+                        out.push(
+                          `  Time: ${abVmCall.calldate || 'N/A'} - ${abVmCall.callend || 'N/A'} (duration: ${abVmCall.duration || 'N/A'})`,
+                        );
+                        out.push(
+                          `  Caller: ${currentCallerA && currentCalledB ? currentCallerA : abVmCall.caller || 'N/A'} -> Called: ${currentCallerA && currentCalledB ? currentCalledB : abVmCall.called || 'N/A'}`,
+                        );
+                        out.push(
+                          `  IPs: ${abVmCall.sipcallerip || 'N/A'}:${abVmCall.sipcallerport || 'N/A'} -> ${abVmCall.sipcalledip || 'N/A'}:${abVmCall.sipcalledport || 'N/A'}`,
+                        );
+                        out.push(
+                          `  Result: ${abVmCall.lastSIPresponseNum || 'N/A'} ${abVmCall.lastSIPresponse || ''} | Who hung up: ${abVmCall.whohanged || 'N/A'}`,
+                        );
+                        if (
+                          abVmCall.lost ||
+                          abVmCall.jitter ||
+                          abVmCall.mos_min
+                        ) {
+                          out.push(
+                            `  Quality: lost=${abVmCall.lost || 0} packets, jitter=${abVmCall.jitter || 0}ms, MOS=${abVmCall.mos_min || 'N/A'}, packet_loss=${abVmCall.packet_loss_perc || 0}%`,
+                          );
                         }
                         if (abVmCall.a_codec || abVmCall.b_codec) {
-                          out.push(`  Codecs: A=${abVmCall.a_codec || 'N/A'}, B=${abVmCall.b_codec || 'N/A'}`);
+                          out.push(
+                            `  Codecs: A=${abVmCall.a_codec || 'N/A'}, B=${abVmCall.b_codec || 'N/A'}`,
+                          );
                         }
                         out.push(`---`);
 
-                        await appendSipHistory(abVmCall, `Additional Search id=${abVmCall.ID || 'N/A'}`);
+                        await appendSipHistory(
+                          abVmCall,
+                          `Additional Search id=${abVmCall.ID || 'N/A'}`,
+                        );
                         // Нашли по A/B => ищем в SBCtelco: по call_id (fbasename) если dst_ip = 172.21.231.16, иначе по номерам
-                        if (abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (abVmCall.fbasename || abVmCall.callid)) {
-                          await appendSbctelcoTraceByCallId(abVmCall.fbasename || abVmCall.callid);
+                        if (
+                          abVmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+                          (abVmCall.fbasename || abVmCall.callid)
+                        ) {
+                          await appendSbctelcoTraceByCallId(
+                            abVmCall.fbasename || abVmCall.callid,
+                          );
                         } else if (currentCallerA && currentCalledB) {
-                          await appendSbctelcoTrace(currentCallerA, currentCalledB, currentCallTime);
+                          await appendSbctelcoTrace(
+                            currentCallerA,
+                            currentCalledB,
+                            currentCallTime,
+                          );
                         }
                       } else {
-                        const cachedUrl = voipCache.get(`${abCallCacheKey}_url`) as string;
-                        const abSearchUrl = cachedUrl || this.buildVoipmonitorSearchUrl({
-                          fdatefrom: searchFdatefrom || fdatefrom,
-                          fcaller: currentCallerA,
-                          fcalled: currentCalledB,
-                          fcallerd_type: 1,
-                          fdurationgt,
-                          fdurationlt,
-                        });
-                        out.push(`--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`);
-                        out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
+                        const cachedUrl = voipCache.get(
+                          `${abCallCacheKey}_url`,
+                        ) as string;
+                        const abSearchUrl =
+                          cachedUrl ||
+                          this.buildVoipmonitorSearchUrl({
+                            fdatefrom: searchFdatefrom || fdatefrom,
+                            fcaller: currentCallerA,
+                            fcalled: currentCalledB,
+                            fcallerd_type: 1,
+                            fdurationgt,
+                            fdurationlt,
+                          });
+                        out.push(
+                          `--- VOIPMONITOR Additional Search [caller: ${currentCallerA}, called: ${currentCalledB}] --- NOT FOUND ---`,
+                        );
+                        out.push(
+                          `⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`,
+                        );
                         out.push(`   Search URL: ${abSearchUrl}`);
                         const params = [
                           `fdatefrom=${searchFdatefrom || fdatefrom}`,
@@ -1145,28 +1461,37 @@ export class CalltraceService {
                           `fcalled=${currentCalledB}`,
                           `fcallerd_type=1`,
                         ];
-                        if (fdurationgt !== undefined) params.push(`fdurationgt=${fdurationgt}`);
-                        if (fdurationlt !== undefined) params.push(`fdurationlt=${fdurationlt}`);
+                        if (fdurationgt !== undefined)
+                          params.push(`fdurationgt=${fdurationgt}`);
+                        if (fdurationlt !== undefined)
+                          params.push(`fdurationlt=${fdurationlt}`);
                         out.push(`   Parameters: ${params.join(', ')}`);
                         out.push(`---`);
                       }
                     } catch (e) {
-                      this.logger.error('Failed to find call in VoIPmonitor by A/B numbers', {
-                        callId,
-                        callerA: currentCallerA,
-                        calledB: currentCalledB,
-                        error: e?.message,
-                      });
+                      this.logger.error(
+                        'Failed to find call in VoIPmonitor by A/B numbers',
+                        {
+                          callId,
+                          callerA: currentCallerA,
+                          calledB: currentCalledB,
+                          error: e?.message,
+                        },
+                      );
                       const errorJson = JSON.stringify({
                         message: e?.message,
                         status: e?.status,
                         response: e?.response,
                       }).replace(/\\"/g, '"');
-                      out.push(`VOIPMONITOR caller=${currentCallerA} called=${currentCalledB} error ${errorJson}`);
+                      out.push(
+                        `VOIPMONITOR caller=${currentCallerA} called=${currentCalledB} error ${errorJson}`,
+                      );
                     }
                   }
                 } else {
-                  out.push(`VOIPMONITOR sipCallId=${connectedSipCallId} not found`);
+                  out.push(
+                    `VOIPMONITOR sipCallId=${connectedSipCallId} not found`,
+                  );
                 }
               }
             }
@@ -1191,13 +1516,20 @@ export class CalltraceService {
           let dialerInboundVmError = false;
           if (vmCall === undefined) {
             try {
-              vmCall = await this.voipmonitorService.findCallBySipCallIdWithDate(id, fallbackFdatefrom);
+              vmCall =
+                await this.voipmonitorService.findCallBySipCallIdWithDate(
+                  id,
+                  fallbackFdatefrom,
+                );
             } catch (e: any) {
-              this.logger.error('Failed to find call in VoIPmonitor for dialer-inbound', {
-                callId,
-                sipCallId: id,
-                error: e?.message,
-              });
+              this.logger.error(
+                'Failed to find call in VoIPmonitor for dialer-inbound',
+                {
+                  callId,
+                  sipCallId: id,
+                  error: e?.message,
+                },
+              );
               vmCall = null;
               dialerInboundVmError = true;
               const errorJson = JSON.stringify({
@@ -1205,28 +1537,52 @@ export class CalltraceService {
                 status: e?.status,
                 response: e?.response,
               }).replace(/\\"/g, '"');
-              out.push(`VOIPMONITOR dialer-inbound sipCallId=${id} error ${errorJson}`);
+              out.push(
+                `VOIPMONITOR dialer-inbound sipCallId=${id} error ${errorJson}`,
+              );
             }
             voipCache.set(id, vmCall);
           }
           if (vmCall) {
             out.push(`--- VOIPMONITOR [dialer-inbound, sipCallId: ${id}] ---`);
             out.push(`  ID: ${vmCall.ID || 'N/A'}`);
-            out.push(`  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`);
-            out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-            out.push(`  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`);
-            out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
-            out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+            out.push(
+              `  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`,
+            );
+            out.push(
+              `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
+            );
+            out.push(
+              `  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`,
+            );
+            out.push(
+              `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+            );
+            out.push(
+              `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+            );
             if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
-              out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+              out.push(
+                `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+              );
             }
             if (vmCall.a_codec || vmCall.b_codec) {
-              out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+              out.push(
+                `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+              );
             }
             out.push(`---`);
-            await appendSipHistory(vmCall, `dialer-inbound id=${vmCall.ID || 'N/A'}`);
-            if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && (vmCall.fbasename || vmCall.callid || id)) {
-              await appendSbctelcoTraceByCallId(vmCall.fbasename || vmCall.callid || id);
+            await appendSipHistory(
+              vmCall,
+              `dialer-inbound id=${vmCall.ID || 'N/A'}`,
+            );
+            if (
+              vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID &&
+              (vmCall.fbasename || vmCall.callid || id)
+            ) {
+              await appendSbctelcoTraceByCallId(
+                vmCall.fbasename || vmCall.callid || id,
+              );
             }
           } else if (!dialerInboundVmError) {
             out.push(`VOIPMONITOR dialer-inbound sipCallId=${id} not found`);
@@ -1240,13 +1596,12 @@ export class CalltraceService {
 
       // Важно: не возвращаем сырой debug/log (иначе в ответе снова будет "полный лог")
       // Заменяем строковые \n на реальные переносы строк
-      let processedEvents = events ? events.replace(/\\n/g, '\n') : events;
-      let processedLog = filteredLog ? filteredLog.replace(/\\n/g, '\n') : filteredLog;
-      const inboundPrefix = '--- DIALER INBOUND (входящий звонок) ---\n';
-      if (isDialerInbound) {
-        if (processedLog) processedLog = inboundPrefix + processedLog;
-        else if (processedEvents) processedEvents = inboundPrefix + processedEvents;
-      }
+      // Признак dialer-inbound уже возвращается отдельным полем isDialerInbound — доп. текстовую
+      // пометку в events/log не добавляем (она была бы языкозависимой, а это сырые данные).
+      const processedEvents = events ? events.replace(/\\n/g, '\n') : events;
+      const processedLog = filteredLog
+        ? filteredLog.replace(/\\n/g, '\n')
+        : filteredLog;
 
       return {
         success: data?.success ?? true,
@@ -1271,11 +1626,18 @@ export class CalltraceService {
    * SIP Call-ID в таком логе нет вообще — только номера A/Б и точное время звонка.
    */
   private isDialerJsonLog(logText: string): boolean {
-    return logText.includes('"CONVOLO_CALL_ID"') || logText.includes('outbound call started event sent');
+    return (
+      logText.includes('"CONVOLO_CALL_ID"') ||
+      logText.includes('outbound call started event sent')
+    );
   }
 
-  private async formatDialerJsonLog(callId: string, logText: string): Promise<any> {
-    const lineRe = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+([^:{]+?)\s*(?::\s*(\{.*\}|\[.*\]|".*"))?$/;
+  private async formatDialerJsonLog(
+    callId: string,
+    logText: string,
+  ): Promise<any> {
+    const lineRe =
+      /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+([^:{]+?)\s*(?::\s*(\{.*\}|\[.*\]|".*"))?$/;
     type Entry = { time: string; event: string; payload: any };
     const entries: Entry[] = [];
 
@@ -1305,7 +1667,9 @@ export class CalltraceService {
     let calledB: string | undefined;
     let creationTime: string | undefined;
 
-    const startingClientCall = entries.find((e) => e.event === 'starting client call');
+    const startingClientCall = entries.find(
+      (e) => e.event === 'starting client call',
+    );
     if (startingClientCall?.payload) {
       callerA = startingClientCall.payload.CONVOLO_CALLER_ID;
       calledB = startingClientCall.payload.CONVOLO_DESTINATION;
@@ -1317,7 +1681,10 @@ export class CalltraceService {
     }
     const sipNumData = entries.find((e) => e.event === 'got sip num data');
     if (sipNumData?.payload) {
-      callerA = callerA || sipNumData.payload.confirmedCallerId || sipNumData.payload.lineName;
+      callerA =
+        callerA ||
+        sipNumData.payload.confirmedCallerId ||
+        sipNumData.payload.lineName;
     }
 
     const normalizeNumber = (n?: string): string | undefined => {
@@ -1331,7 +1698,9 @@ export class CalltraceService {
     // fdatefrom для VoIPmonitor: берём naive wall-clock из channel.creationtime (совпадает с calldate в VoIPmonitor,
     // т.к. это то же серверное локальное время), иначе — дата первой строки лога с 00:00:00
     let fdatefrom: string;
-    const creationMatch = creationTime?.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+    const creationMatch = creationTime?.match(
+      /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/,
+    );
     if (creationMatch) {
       fdatefrom = creationMatch[1];
     } else {
@@ -1343,13 +1712,20 @@ export class CalltraceService {
     for (const e of entries) {
       switch (e.event) {
         case 'call started':
-          summaryLines.push(`${e.time} | Call started: ${e.payload?.clientPhone ?? ''} (agent ${e.payload?.channel?.caller?.name ?? ''})`);
+          summaryLines.push(
+            `${e.time} | Call started: ${e.payload?.clientPhone ?? ''} (agent ${e.payload?.channel?.caller?.name ?? ''})`,
+          );
           break;
         case 'dial state':
-          if (e.payload?.dialstatus) summaryLines.push(`${e.time} | Dial state: ${e.payload.dialstatus}`);
+          if (e.payload?.dialstatus)
+            summaryLines.push(
+              `${e.time} | Dial state: ${e.payload.dialstatus}`,
+            );
           break;
         case 'lead answered':
-          summaryLines.push(`${e.time} | Lead answered (${e.payload?.msSinceDial ?? '?'}ms since dial)`);
+          summaryLines.push(
+            `${e.time} | Lead answered (${e.payload?.msSinceDial ?? '?'}ms since dial)`,
+          );
           break;
         case 'agent disconnected':
         case 'client disconnected':
@@ -1378,14 +1754,19 @@ export class CalltraceService {
         });
         vmCall = response?.results?.[0] || null;
       } catch (e: any) {
-        this.logger.error('Failed to find call in VoIPmonitor for dialer JSON log', {
-          callId,
-          callerA: callerNormalized,
-          calledB: calledNormalized,
-          fdatefrom,
-          error: e?.message,
-        });
-        out.push(`VOIPMONITOR caller=${callerNormalized} called=${calledNormalized} error ${e?.message}`);
+        this.logger.error(
+          'Failed to find call in VoIPmonitor for dialer JSON log',
+          {
+            callId,
+            callerA: callerNormalized,
+            calledB: calledNormalized,
+            fdatefrom,
+            error: e?.message,
+          },
+        );
+        out.push(
+          `VOIPMONITOR caller=${callerNormalized} called=${calledNormalized} error ${e?.message}`,
+        );
       }
     }
 
@@ -1393,43 +1774,67 @@ export class CalltraceService {
     const SBC_DST_IP_BY_CALL_ID = '172.21.231.16';
     if (vmCall) {
       sipCallId = vmCall.fbasename || vmCall.callid || undefined;
-      out.push(`--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] ---`);
+      out.push(
+        `--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] ---`,
+      );
       out.push(`  ID: ${vmCall.ID || 'N/A'}`);
       out.push(`  Call-ID (fbasename): ${sipCallId || 'N/A'}`);
-      out.push(`  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`);
-      out.push(`  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`);
-      out.push(`  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`);
+      out.push(
+        `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
+      );
+      out.push(
+        `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+      );
+      out.push(
+        `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+      );
       if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
-        out.push(`  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`);
+        out.push(
+          `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+        );
       }
       if (vmCall.a_codec || vmCall.b_codec) {
-        out.push(`  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`);
+        out.push(
+          `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+        );
       }
       out.push(`---`);
 
       try {
-        const sipHistory = await this.voipmonitorService.getSipHistoryBriefDataById(String(vmCall.ID));
+        const sipHistory =
+          await this.voipmonitorService.getSipHistoryBriefDataById(
+            String(vmCall.ID),
+          );
         if (sipHistory) {
           out.push(`--- VOIPMONITOR SIP HISTORY [id=${vmCall.ID}] ---`);
           out.push(sipHistory);
           out.push(`---`);
         }
       } catch (e: any) {
-        this.logger.error('Failed to fetch VoIPmonitor SIP history for dialer JSON log', {
-          callId,
-          voipmonitorId: vmCall.ID,
-          error: e?.message,
-        });
+        this.logger.error(
+          'Failed to fetch VoIPmonitor SIP history for dialer JSON log',
+          {
+            callId,
+            voipmonitorId: vmCall.ID,
+            error: e?.message,
+          },
+        );
       }
 
       try {
         if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && sipCallId) {
-          const raw = await this.sbctelcoService.getCallTrace({ nb_result: 2, call_id: sipCallId, recursive: 'yes' });
+          const raw = await this.sbctelcoService.getCallTrace({
+            nb_result: 2,
+            call_id: sipCallId,
+            recursive: 'yes',
+          });
           out.push(`--- SBCTELCO [call_id: ${sipCallId}] ---`);
           out.push(this.sbctelcoService.formatCallTraceText(raw));
           out.push(`---`);
         } else if (callerNormalized && calledNormalized) {
-          const timeRange = vmCall.calldate ? this.sbctelcoService.getStartEndForCallTime(vmCall.calldate) : null;
+          const timeRange = vmCall.calldate
+            ? this.sbctelcoService.getStartEndForCallTime(vmCall.calldate)
+            : null;
           const raw = await this.sbctelcoService.getCallTrace({
             nb_result: 2,
             calling: callerNormalized,
@@ -1437,17 +1842,26 @@ export class CalltraceService {
             recursive: 'yes',
             ...(timeRange && { start: timeRange.start, end: timeRange.end }),
           });
-          out.push(`--- SBCTELCO [calling: ${callerNormalized} -> called: ${calledNormalized}] ---`);
+          out.push(
+            `--- SBCTELCO [calling: ${callerNormalized} -> called: ${calledNormalized}] ---`,
+          );
           out.push(this.sbctelcoService.formatCallTraceText(raw));
           out.push(`---`);
         }
       } catch (e: any) {
-        this.logger.error('Failed to fetch SBCtelco call_trace for dialer JSON log', { callId, error: e?.message });
+        this.logger.error(
+          'Failed to fetch SBCtelco call_trace for dialer JSON log',
+          { callId, error: e?.message },
+        );
       }
     } else if (callerNormalized && calledNormalized) {
-      out.push(`--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] --- NOT FOUND ---`);
+      out.push(
+        `--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] --- NOT FOUND ---`,
+      );
       out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
-      out.push(`   Parameters: fdatefrom=${fdatefrom}, fcaller=${callerNormalized}, fcalled=${calledNormalized}, fcallerd_type=1`);
+      out.push(
+        `   Parameters: fdatefrom=${fdatefrom}, fcaller=${callerNormalized}, fcalled=${calledNormalized}, fcallerd_type=1`,
+      );
       out.push(`---`);
     }
 
@@ -1457,7 +1871,9 @@ export class CalltraceService {
       ...(out.length ? { log: out.join('\n') } : {}),
       ...(sipCallId ? { sipCallId } : {}),
       ...(vmCall?.ID ? { cdrId: String(vmCall.ID) } : {}),
-      ...(vmCall?.calldate ? { calldate: String(vmCall.calldate).slice(0, 10) } : {}),
+      ...(vmCall?.calldate
+        ? { calldate: String(vmCall.calldate).slice(0, 10) }
+        : {}),
     };
   }
 
@@ -1473,10 +1889,10 @@ export class CalltraceService {
 
   async getCallTrace(callId: string) {
     const url = this.getApiUrl(callId);
-    
+
     try {
       const response = await firstValueFrom(this.httpService.get(url));
-      
+
       // Проверяем, если API вернул success: false, значит звонок не найден
       if (response.data?.success === false) {
         this.logger.warn('Call not found in API response', {
@@ -1486,13 +1902,17 @@ export class CalltraceService {
         });
         throw new NotFoundException(response.data?.debug || 'call not found');
       }
-      
+
       // Определяем тип звонка
       const callType = this.getCallType(callId);
-      
+
       // Форматируем ответ в зависимости от типа
-      const formattedData = await this.formatLog(callType, callId, response.data);
-      
+      const formattedData = await this.formatLog(
+        callType,
+        callId,
+        response.data,
+      );
+
       return {
         callId,
         callType,
@@ -1527,7 +1947,7 @@ export class CalltraceService {
       if (error.response?.status === 404) {
         throw new NotFoundException('call not found');
       }
-      
+
       throw new HttpException(
         error.response?.data?.message || 'Failed to fetch call log',
         error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
