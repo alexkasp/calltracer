@@ -4,6 +4,26 @@
 
 ## Основной функционал
 
+### Аутентификация
+
+Весь веб-интерфейс закрыт логином (кроме `/login`) — `AuthGuard` глобально проверяет подписанную httpOnly-куку `calltracer_session`.Self-signup нет — пользователи заводятся вручную в БД (таблица `users`, MySQL `sbclogs`).
+
+**Добавить нового пользователя:**
+
+```bash
+# 1. Сгенерировать bcrypt-хэш пароля
+npm run hash-password -- 'СложныйПароль123'
+# выведет что-то вроде: $2b$12$aT3x/rlJsKv9ghvP4KXSUeSKisgAACxs.oN5UcbeTeCWEUg69yGzm
+
+# 2. Вставить пользователя в БД (подставить свой логин и хэш из шага 1)
+mysql -h<MANAGER_DB_HOST> -u<MANAGER_DB_USERNAME> -p sbclogs -e \
+  "INSERT INTO users (username, password_hash, active) VALUES ('ivan', '<хэш>', 1);"
+```
+
+Деактивировать пользователя (не удаляя): `UPDATE users SET active=0 WHERE username='ivan';`
+
+Переменная окружения **`SESSION_SECRET`** — секрет для подписи cookie-сессий (HMAC-SHA256, без внешнего session-store). **Обязательно задать своё значение на проде** (`.env`, не в git) — без него при каждом рестарте процесса генерируется случайный секрет и все сессии сбрасываются. Сгенерировать: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+
 ### Трассировка звонков (`CalltraceService`)
 
 - Разбор логов **S2L** и **Dialer** (в т.ч. сценарий `dialer-inbound`), извлечение SIP, событий, INVITE на заданные домены (например `sip.se.didlogic.net`).
