@@ -78,6 +78,29 @@
 
 На HTML-страницах в шапке — общая навигация по разделам.
 
+### Прочие HTTP-эндпоинты
+
+#### Трассировка (`CalltraceController`)
+
+| Путь | Назначение |
+|------|------------|
+| `GET /calltrace/:id` | Трассировка звонка по ID (dialer `X.Y` или S2L). HTML по умолчанию; `?format=json` — сырые данные (`callId`, `callType`, `events`, `log`, `sipCallId`); `?format=text` — events+log без HTML |
+
+#### VoIPmonitor (`VoipmonitorController`)
+
+| Путь | Назначение |
+|------|------------|
+| `GET /voipmonitor/calls` | CDR LISTING из VoIPmonitor. Обязателен `fdatefrom`; опционально `start`, `limit`, `fdateto`, `fcaller`, `fcalled`, `fcallerd_type`, `fcallid` — всегда JSON |
+
+#### SBCtelco (`SbctelcoController`)
+
+| Путь | Назначение |
+|------|------------|
+| `GET /sbctelco/fetch-and-save` | Забрать звонки SBCtelco за последние 2 мин и сохранить новые (по id) в `sbctrace` |
+| `GET /sbctelco/sbctrace/search` | Поиск в `sbctrace` по `calling`/`called`/`timestamp_after`/`timestamp_before` (нужен хотя бы один фильтр), `limit`. Текст по умолчанию, `?format=json` — JSON |
+| `GET /sbctelco/sbctrace/:id` | Лог конкретной записи `sbctrace` по id. Текст по умолчанию, `?format=json` — JSON |
+| `GET /sbctelco/call_trace` | Прямой запрос `call_trace` к SBCtelco (`nb_result`, `called`, `calling`, `recursive`). `save=1` — сохранить результат в `sbctrace` (в JSON-ответе добавятся `_saved`/`_savedIds`/`_lowMosCount`). HTML по умолчанию, `?format=text` / `?format=json` — альтернативные форматы |
+
 ### Переменные окружения (фрагмент)
 
 - `CONVOLO_API_KEY` — ключ API Convolo (логи и мониторинг).
@@ -123,3 +146,23 @@ $ npm run test:e2e
 # test coverage
 $ npm run test:cov
 ```
+
+## Деплой на прод-сервер
+
+Прод крутится на `dev.uae` (host `app02d`), каталог `/var/calltracer`, каталог и `.git` принадлежат `root` — свой пользователь работает через `sudo`. Процессом управляет общий PM2-демон (там же ещё несколько несвязанных сервисов), поэтому рестартовать нужно **точечно по имени/id**, не всем PM2 сразу.
+
+```bash
+# на сервере, от своего пользователя (не root)
+cd /var/calltracer
+sudo git pull origin main
+sudo /root/.nvm/versions/node/v22.21.1/bin/npm ci
+sudo /root/.nvm/versions/node/v22.21.1/bin/npm run build
+sudo /root/.nvm/versions/node/v22.21.1/bin/pm2 restart calltracer
+```
+
+Особенности:
+
+- `ecosystem.config.cjs` **не в git** (сознательно, см. `.gitignore`) — на сервере в нём указан `interpreter` на Node v22 (nvm), локальный файл в репозитории — только заготовка для разработки. Не перезаписывать по аналогии с origin.
+- `/root` закрыт для чужих пользователей (`550`), поэтому `node`/`npm`/`pm2` из-под nvm доступны только через `sudo` с полным путём. Если настроены алиасы (`node22`, `npm22`, `pm2`) в `~/.bashrc` — можно короче: `pm2 restart calltracer`.
+- Перед `git pull` стоит проверить `git status`/`git log` — репозиторий уже попадал в состояние зависшего `rebase` (правился вручную на сервере в обход обычного flow); в норме `main` должен быть чистым и совпадать с `origin/main`.
+- Локально (машина разработчика) — обычный flow: закоммитить, запушить в `origin/main`, дальше деплой на сервере как выше.
