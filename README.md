@@ -42,6 +42,15 @@
 - Недельная агрегация звонков по **userId**; отчёт за 4 недели (падение относительно максимума за период).
 - Резюме **отклонений fail rate по пользователям** (порог в п.п.).
 
+### Прослушивание звонков (`CallRecordingController`)
+
+- Поиск pcap-дампа/аудиозаписи звонка в VoIPmonitor по SIP Call-ID через `HTTP API 2` (`/php/api.php`, авторизация `user`/`password`, отдельно от сессионного `sql.php`).
+- `GET /call-recording` — форма (Call-ID + опционально дата звонка).
+- `GET /call-recording/player?callid=…&calldate=…` — страница с метаданными звонка (из CDR, если найден), HTML5-плеером RTP-потока и ссылками на скачивание.
+- `GET /call-recording/audio?cdrId=…` или `?callid=…&calldate=…` — проксирует WAV/OGG (`getVoiceRecording`) для `<audio>`.
+- `GET /call-recording/pcap?cdrId=…` или `?callid=…` — отдаёт pcap/zip (`getPCAP`) как файл для скачивания.
+- Если `cdrId` неизвестен (звонок не нашёлся в CDR), аудио/pcap запрашиваются напрямую по `callId` с `cidMerge=true` (склейка нескольких плеч).
+
 ### Telegram (`TelegramNotifyService`)
 
 - Уведомления об алертах и снятии алерта; в тексте интервал слота указывается как **время на сервере** (например `10:00–10:30 (slot 20)`).

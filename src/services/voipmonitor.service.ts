@@ -585,4 +585,117 @@ export class VoipmonitorService {
 
     return response?.results?.[0] ?? null;
   }
+
+  /**
+   * VoIPmonitor HTTP API 2 (/php/api.php) — отдельная от sql.php авторизация:
+   * user/password напрямую в query, а не сессионная кука. Используется для бинарных
+   * данных (pcap/wav), которые sql.php/pcap2text.php не отдают.
+   */
+  private async requestApiBinary(
+    task: 'getPCAP' | 'getVoiceRecording',
+    params: Record<string, unknown>,
+  ): Promise<{ data: Buffer; contentType: string }> {
+    const url = `${this.voipmonitorUrl}/php/api.php`;
+    const requestParams = {
+      task,
+      user: this.username,
+      password: this.password,
+      params: JSON.stringify(params),
+    };
+
+    try {
+      this.logger.log('VoIPmonitor api.php request', { task, params });
+
+      const response = await firstValueFrom(
+        this.httpService.get(url, {
+          params: requestParams,
+          responseType: 'arraybuffer',
+        }),
+      );
+
+      const contentType = String(response.headers?.['content-type'] || 'application/octet-stream');
+      const buffer = Buffer.from(response.data as ArrayBuffer);
+
+      // При ошибке (например нет прав can_pcap/can_download_audio, файл уже удалён по ретеншену)
+      // VoIPmonitor вместо бинарных данных отдаёт JSON/текст с описанием ошибки.
+      if (contentType.includes('json') || contentType.includes('text')) {
+        let message = buffer.toString('utf8');
+        try {
+          const parsed = JSON.parse(message);
+          message = parsed?.error || parsed?.message || message;
+        } catch {
+          // не JSON — оставляем как есть
+        }
+        this.logger.warn('VoIPmonitor api.php returned non-binary response', { task, params, message: message.slice(0, 500) });
+        throw new HttpException(`VoIPmonitor API error (${task}): ${message.slice(0, 500)}`, HttpStatus.BAD_GATEWAY);
+      }
+
+      return { data: buffer, contentType };
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+
+      this.logger.error('Error calling VoIPmonitor api.php', {
+        task,
+        params,
+        error: {
+          message: error.message,
+          code: error.code,
+          status: error.response?.status,
+        },
+      });
+
+      throw new HttpException(
+        `Failed to fetch ${task} from VoIPmonitor`,
+        error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  /** Скачивание аудиозаписи звонка (WAV/OGG) по cdrId (предпочтительно) или callId. */
+  async getVoiceRecording(params: {
+    cdrId?: string | number;
+    callId?: string;
+    calldate?: string;
+    ogg?: boolean;
+    cidInterval?: number;
+    cidMerge?: boolean;
+  }): Promise<{ data: Buffer; contentType: string }> {
+    if (!params.cdrId && !params.callId) {
+      throw new BadRequestException('cdrId or callId is required to fetch voice recording');
+    }
+
+    const apiParams: Record<string, unknown> = {};
+    if (params.cdrId !== undefined) apiParams.cdrId = params.cdrId;
+    if (params.callId) apiParams.callId = params.callId;
+    if (params.calldate) apiParams.calldate = params.calldate;
+    if (params.ogg) apiParams.ogg = true;
+    if (params.cidInterval !== undefined) apiParams.cidInterval = params.cidInterval;
+    if (params.cidMerge !== undefined) apiParams.cidMerge = params.cidMerge;
+
+    return this.requestApiBinary('getVoiceRecording', apiParams);
+  }
+
+  /** Скачивание pcap-дампа звонка по cdrId или callId (с опциональным склеиванием плеч). */
+  async getPcapDump(params: {
+    cdrId?: string | number;
+    callId?: string;
+    cidInterval?: number;
+    cidMerge?: boolean;
+    zip?: boolean;
+    disableRtp?: boolean;
+  }): Promise<{ data: Buffer; contentType: string }> {
+    if (!params.cdrId && !params.callId) {
+      throw new BadRequestException('cdrId or callId is required to fetch PCAP');
+    }
+
+    const apiParams: Record<string, unknown> = {};
+    if (params.cdrId !== undefined) apiParams.cdrId = params.cdrId;
+    if (params.callId) apiParams.callId = params.callId;
+    if (params.cidInterval !== undefined) apiParams.cidInterval = params.cidInterval;
+    if (params.cidMerge !== undefined) apiParams.cidMerge = params.cidMerge;
+    if (params.zip) apiParams.zip = true;
+    if (params.disableRtp) apiParams.disable_rtp = true;
+
+    return this.requestApiBinary('getPCAP', apiParams);
+  }
 }

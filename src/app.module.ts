@@ -11,6 +11,7 @@ import { CalltraceController } from './controllers/calltrace.controller';
 import { CalltraceService } from './services/calltrace.service';
 import { VoipmonitorController } from './controllers/voipmonitor.controller';
 import { VoipmonitorService } from './services/voipmonitor.service';
+import { CallRecordingController } from './controllers/call-recording.controller';
 import { SbctelcoController } from './controllers/sbctelco.controller';
 import { SbctelcoService } from './services/sbctelco.service';
 import { SbctelcoCronService } from './services/sbctelco-cron.service';
@@ -45,7 +46,7 @@ import { TelegramNotifyService } from './services/telegram-notify.service';
     TypeOrmModule.forFeature([Sbctrace, CallMonitorState]),
     HttpModule,
   ],
-  controllers: [AppController, CalltraceController, VoipmonitorController, SbctelcoController, CallMonitorController],
+  controllers: [AppController, CalltraceController, VoipmonitorController, CallRecordingController, SbctelcoController, CallMonitorController],
   providers: [
     AppService,
     CalltraceService,
