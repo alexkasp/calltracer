@@ -112,6 +112,7 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.legAgent': 'Звонок агенту',
     'recording.legLead': 'Звонок лиду',
     'recording.viewCallTrace': 'Разбор лога звонка',
+    'recording.attemptLabel': 'Попытка {n}',
     'recording.audioSectionTitle': 'RTP-поток (аудио)',
     'recording.audioLoadHint':
       'Волна и спектрограмма строятся в браузере (wavesurfer.js) — загрузка занимает ~10–15 сек.',
@@ -368,6 +369,7 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.legAgent': 'Call to agent',
     'recording.legLead': 'Call to lead',
     'recording.viewCallTrace': 'View call log analysis',
+    'recording.attemptLabel': 'Attempt {n}',
     'recording.audioSectionTitle': 'RTP stream (audio)',
     'recording.audioLoadHint':
       'The waveform and spectrogram are rendered in the browser (wavesurfer.js) — loading takes ~10–15 sec.',
@@ -621,6 +623,7 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.legAgent': 'الاتصال بالوكيل',
     'recording.legLead': 'الاتصال بالعميل المحتمل',
     'recording.viewCallTrace': 'عرض تحليل سجل المكالمة',
+    'recording.attemptLabel': 'المحاولة {n}',
     'recording.audioSectionTitle': 'تدفق RTP (الصوت)',
     'recording.audioLoadHint':
       'يتم رسم الموجة الصوتية والطيف الترددي في المتصفح (wavesurfer.js) — يستغرق التحميل ~10–15 ثانية.',

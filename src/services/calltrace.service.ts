@@ -193,7 +193,7 @@ export class CalltraceService {
       // Плечи callback-звонка (S2L "call me back"): сначала звонок агенту, затем — после
       // "Notify sending to LeadCM"/TRY TO CALL LEAD — звонок лиду. У каждого плеча свой sipCallId
       // в VoIPmonitor; сохраняем оба, чтобы call-recording мог показать запись любого из плеч.
-      const legs: Array<{ label: 'agent' | 'lead'; sipCallId: string }> = [];
+      const legs: Array<{ label: string; sipCallId: string }> = [];
       if (logSection) {
         const logLines = logSection.split('\n');
         const out: string[] = [];
@@ -1779,19 +1779,47 @@ export class CalltraceService {
     }
 
     const out: string[] = [];
+    const legs: Array<{ label: string; sipCallId: string }> = [];
     let vmCall: any = null;
+    let attemptCalls: any[] = [];
     if (calledNormalized) {
       try {
         if (narrowWindow) {
           const response = await this.voipmonitorService.getCalls({
-            limit: 1,
+            limit: 5,
             start: 0,
             fdatefrom: narrowWindow.fdatefrom,
             fdateto: narrowWindow.fdateto,
             fcalled: calledNormalized,
             fcallerd_type: 1,
           });
-          vmCall = response?.results?.[0] || null;
+          const results: any[] = response?.results || [];
+          vmCall = results[0] || null;
+
+          // Одна и та же сессия дайлера иногда попадает в VoIPmonitor несколькими CDR-записями —
+          // повторные попытки дозвона в рамках долей секунды (см. постмортем: 1785137505.066519 ->
+          // CDR 26753600 и 26753601, разница по calldate < 1с). Группируем их как "попытки", чтобы
+          // и лог calltrace, и call-recording могли показать каждую отдельно.
+          if (vmCall) {
+            const baseTime = Date.parse(
+              String(vmCall.calldate || '').replace(' ', 'T'),
+            );
+            const attempts = results.filter((r) => {
+              const t = Date.parse(String(r.calldate || '').replace(' ', 'T'));
+              return (
+                !Number.isNaN(baseTime) &&
+                !Number.isNaN(t) &&
+                Math.abs(t - baseTime) < 1000
+              );
+            });
+            if (attempts.length > 1) {
+              attemptCalls = attempts;
+              attempts.forEach((r, i) => {
+                const sid = r.fbasename || r.callid;
+                if (sid) legs.push({ label: String(i + 1), sipCallId: sid });
+              });
+            }
+          }
         }
         if (!vmCall && callerNormalized) {
           const response = await this.voipmonitorService.getCalls({
@@ -1824,30 +1852,36 @@ export class CalltraceService {
 
     let sipCallId: string | undefined;
     const SBC_DST_IP_BY_CALL_ID = '172.21.231.16';
-    if (vmCall) {
-      sipCallId = vmCall.fbasename || vmCall.callid || undefined;
+    const callsToShow: any[] =
+      attemptCalls.length > 1 ? attemptCalls : vmCall ? [vmCall] : [];
+    for (let i = 0; i < callsToShow.length; i++) {
+      const call = callsToShow[i];
+      const attemptTag = callsToShow.length > 1 ? ` (Attempt ${i + 1})` : '';
+      const callSipCallId = call.fbasename || call.callid || undefined;
+      if (i === 0) sipCallId = callSipCallId;
+
       out.push(
-        `--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] ---`,
+        `--- VOIPMONITOR${attemptTag} [caller: ${callerNormalized}, called: ${calledNormalized}] ---`,
       );
-      out.push(`  ID: ${vmCall.ID || 'N/A'}`);
-      out.push(`  Call-ID (fbasename): ${sipCallId || 'N/A'}`);
+      out.push(`  ID: ${call.ID || 'N/A'}`);
+      out.push(`  Call-ID (fbasename): ${callSipCallId || 'N/A'}`);
       out.push(
-        `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
-      );
-      out.push(
-        `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+        `  Time: ${call.calldate || 'N/A'} - ${call.callend || 'N/A'} (duration: ${call.duration || 'N/A'})`,
       );
       out.push(
-        `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+        `  IPs: ${call.sipcallerip || 'N/A'}:${call.sipcallerport || 'N/A'} -> ${call.sipcalledip || 'N/A'}:${call.sipcalledport || 'N/A'}`,
       );
-      if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
+      out.push(
+        `  Result: ${call.lastSIPresponseNum || 'N/A'} ${call.lastSIPresponse || ''} | Who hung up: ${call.whohanged || 'N/A'}`,
+      );
+      if (call.lost || call.jitter || call.mos_min) {
         out.push(
-          `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+          `  Quality: lost=${call.lost || 0} packets, jitter=${call.jitter || 0}ms, MOS=${call.mos_min || 'N/A'}, packet_loss=${call.packet_loss_perc || 0}%`,
         );
       }
-      if (vmCall.a_codec || vmCall.b_codec) {
+      if (call.a_codec || call.b_codec) {
         out.push(
-          `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+          `  Codecs: A=${call.a_codec || 'N/A'}, B=${call.b_codec || 'N/A'}`,
         );
       }
       out.push(`---`);
@@ -1855,10 +1889,12 @@ export class CalltraceService {
       try {
         const sipHistory =
           await this.voipmonitorService.getSipHistoryBriefDataById(
-            String(vmCall.ID),
+            String(call.ID),
           );
         if (sipHistory) {
-          out.push(`--- VOIPMONITOR SIP HISTORY [id=${vmCall.ID}] ---`);
+          out.push(
+            `--- VOIPMONITOR SIP HISTORY${attemptTag} [id=${call.ID}] ---`,
+          );
           out.push(sipHistory);
           out.push(`---`);
         }
@@ -1867,25 +1903,25 @@ export class CalltraceService {
           'Failed to fetch VoIPmonitor SIP history for dialer JSON log',
           {
             callId,
-            voipmonitorId: vmCall.ID,
+            voipmonitorId: call.ID,
             error: e?.message,
           },
         );
       }
 
       try {
-        if (vmCall.sipcalledip === SBC_DST_IP_BY_CALL_ID && sipCallId) {
+        if (call.sipcalledip === SBC_DST_IP_BY_CALL_ID && callSipCallId) {
           const raw = await this.sbctelcoService.getCallTrace({
             nb_result: 2,
-            call_id: sipCallId,
+            call_id: callSipCallId,
             recursive: 'yes',
           });
-          out.push(`--- SBCTELCO [call_id: ${sipCallId}] ---`);
+          out.push(`--- SBCTELCO${attemptTag} [call_id: ${callSipCallId}] ---`);
           out.push(this.sbctelcoService.formatCallTraceText(raw));
           out.push(`---`);
         } else if (callerNormalized && calledNormalized) {
-          const timeRange = vmCall.calldate
-            ? this.sbctelcoService.getStartEndForCallTime(vmCall.calldate)
+          const timeRange = call.calldate
+            ? this.sbctelcoService.getStartEndForCallTime(call.calldate)
             : null;
           const raw = await this.sbctelcoService.getCallTrace({
             nb_result: 2,
@@ -1895,7 +1931,7 @@ export class CalltraceService {
             ...(timeRange && { start: timeRange.start, end: timeRange.end }),
           });
           out.push(
-            `--- SBCTELCO [calling: ${callerNormalized} -> called: ${calledNormalized}] ---`,
+            `--- SBCTELCO${attemptTag} [calling: ${callerNormalized} -> called: ${calledNormalized}] ---`,
           );
           out.push(this.sbctelcoService.formatCallTraceText(raw));
           out.push(`---`);
@@ -1906,7 +1942,8 @@ export class CalltraceService {
           { callId, error: e?.message },
         );
       }
-    } else if (calledNormalized) {
+    }
+    if (!callsToShow.length && calledNormalized) {
       out.push(
         `--- VOIPMONITOR [caller: ${callerNormalized || 'N/A'}, called: ${calledNormalized}] --- NOT FOUND ---`,
       );
@@ -1926,6 +1963,7 @@ export class CalltraceService {
       ...(vmCall?.calldate
         ? { calldate: String(vmCall.calldate).slice(0, 10) }
         : {}),
+      ...(legs.length > 1 ? { legs } : {}),
     };
   }
 

@@ -157,10 +157,11 @@ export class CallRecordingController {
     const originalQueryId = callId;
     let resolvedCalldate = calldate;
     let traceResolutionNotice: string | null = null;
-    // Плечи callback-звонка (S2L "заказ звонка"): звонок агенту и звонок лиду — два отдельных
-    // sipCallId в VoIPmonitor для одного и того же trace id. Если их больше одного, показываем
-    // в верху страницы меню "Call to agent"/"Call to lead" и переключаемся между ними по ?leg=.
-    let legs: Array<{ label: 'agent' | 'lead'; sipCallId: string }> = [];
+    // Несколько записей на один trace id: либо плечи callback-звонка S2L (label: 'agent'/'lead'),
+    // либо повторные попытки дозвона одной сессии дайлера, слитые в VoIPmonitor в разные CDR
+    // (label: '1', '2', ... — см. formatDialerJsonLog). В обоих случаях показываем в верху
+    // страницы меню-переключатель и выбираем нужную запись по ?leg=.
+    let legs: Array<{ label: string; sipCallId: string }> = [];
     let selectedLeg: string | null = null;
 
     // Если передан внутренний call-trace id (дайлер "1784891602.0026156" / S2L), а не SIP Call-ID —
@@ -340,10 +341,12 @@ export class CallRecordingController {
             });
             if (resolvedCalldate) params.set('calldate', resolvedCalldate);
             const isActive = l.label === selectedLeg;
-            const label = t(
-              lang,
-              l.label === 'lead' ? 'recording.legLead' : 'recording.legAgent',
-            );
+            const label =
+              l.label === 'lead'
+                ? t(lang, 'recording.legLead')
+                : l.label === 'agent'
+                  ? t(lang, 'recording.legAgent')
+                  : t(lang, 'recording.attemptLabel', { n: l.label });
             return `<a href="/call-recording/player?${params.toString()}" style="${isActive ? 'font-weight: 700; color: #eaeaea; border-bottom: 2px solid #7c3aed;' : ''} margin-right: 16px; padding-bottom: 2px;">${label}</a>`;
           })
           .join('')}</div>`
