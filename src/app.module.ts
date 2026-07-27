@@ -72,7 +72,12 @@ import { LangController } from './controllers/lang.controller';
       inject: [ConfigService],
     }),
     TypeOrmModule.forFeature([Sbctrace, CallMonitorState, User]),
-    HttpModule,
+    HttpModule.register({
+      // Без таймаута зависший внешний сервис (VoIPmonitor/SBCtelco/Convolo) вешает наш запрос
+      // на неопределённое время — клиент видит 504/зависание вместо быстрой ошибки.
+      timeout: 20000,
+      maxRedirects: 5,
+    }),
   ],
   controllers: [
     AppController,
