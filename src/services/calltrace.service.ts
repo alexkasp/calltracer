@@ -410,6 +410,42 @@ export class CalltraceService {
             }
           }
           if (!pushedAny) {
+            // Живой SBCtelco API (call_trace) уже может не хранить звонок (ретеншен), но крон
+            // (SbctelcoCronService) сохраняет звонки за последние 2 минуты в БД sbclogs.sbctrace —
+            // пробуем найти запись там по тому же call_id, прежде чем сдаться.
+            const dbCacheKey = `sbctrace_db_callid_${id}`;
+            let dbText = sbctelcoCache.get(dbCacheKey) as string | undefined;
+            if (dbText === undefined) {
+              try {
+                const record = await this.sbctelcoService.findByCallId(id);
+                dbText = record
+                  ? truncateText(
+                      this.sbctelcoService.formatCallTraceText(
+                        record.payload ?? {},
+                      ),
+                      100000,
+                    )
+                  : '';
+              } catch (e: any) {
+                this.logger.error('Failed to look up sbctrace DB by call_id', {
+                  callId,
+                  sipCallId: id,
+                  error: e?.message,
+                });
+                dbText = '';
+              }
+              sbctelcoCache.set(dbCacheKey, dbText);
+            }
+            if (dbText && /=== Call \d+/.test(dbText)) {
+              out.push(
+                `ℹ️  SBCtelco: not in live API, found in local DB (sbclogs.sbctrace)`,
+              );
+              out.push(`--- SBCTELCO [call_id: ${id}] ---`);
+              out.push(dbText);
+              out.push(`---`);
+              return;
+            }
+
             out.push(`--- SBCTELCO [call_id: ${id}] ---`);
             out.push(`⚠️  SBCtelco: call not found.`);
             out.push(

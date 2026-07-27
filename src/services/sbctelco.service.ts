@@ -622,6 +622,17 @@ export class SbctelcoService {
     return this.formatCallTraceText(record.payload ?? {});
   }
 
+  /**
+   * Найти запись в локальной БД sbclogs.sbctrace по call_id (SIP Call-ID). Крон
+   * (SbctelcoCronService) сохраняет туда звонки за последние 2 минуты — на случай,
+   * когда живой SBCtelco API (call_trace) уже не хранит запись (ретеншен), а в нашей
+   * БД она ещё есть.
+   */
+  async findByCallId(callId: string): Promise<Sbctrace | null> {
+    if (!callId?.trim()) return null;
+    return this.sbctraceRepo.findOne({ where: { callId: callId.trim() } });
+  }
+
   formatCallTraceText(raw: any): string {
     if (!raw || typeof raw !== 'object') return '';
 
