@@ -615,6 +615,10 @@ export class CalltraceService {
             call2client = true;
             call2clientCapture = true;
             informLeadCall = true;
+            // Помечаем сразу здесь, а не только по последующему INVITE: лид иногда набирается
+            // через CallPSTN (прямой PSTN-шлюз Voximplant, без SIP-трейса вовсе), тогда строки
+            // INVITE после этого события просто не будет и nextConnectIsLead не выставился бы.
+            nextConnectIsLead = true;
             continue;
           }
 
