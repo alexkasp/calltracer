@@ -129,6 +129,7 @@ export class CallRecordingController {
   async player(
     @Query('callid') callid?: string,
     @Query('calldate') calldate?: string,
+    @Query('leg') legParam?: string,
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
@@ -140,6 +141,11 @@ export class CallRecordingController {
     const originalQueryId = callId;
     let resolvedCalldate = calldate;
     let traceResolutionNotice: string | null = null;
+    // Плечи callback-звонка (S2L "заказ звонка"): звонок агенту и звонок лиду — два отдельных
+    // sipCallId в VoIPmonitor для одного и того же trace id. Если их больше одного, показываем
+    // в верху страницы меню "Call to agent"/"Call to lead" и переключаемся между ними по ?leg=.
+    let legs: Array<{ label: 'agent' | 'lead'; sipCallId: string }> = [];
+    let selectedLeg: string | null = null;
 
     // Если передан внутренний call-trace id (дайлер "1784891602.0026156" / S2L), а не SIP Call-ID —
     // резолвим через CalltraceService (парсит лог Convolo, ищет звонок в VoIPmonitor по номерам/времени).
@@ -148,7 +154,16 @@ export class CallRecordingController {
       try {
         const trace = await this.calltraceService.getCallTrace(traceId);
         const data: any = trace?.data;
-        if (data?.sipCallId) {
+        if (Array.isArray(data?.legs) && data.legs.length > 1) {
+          legs = data.legs;
+          selectedLeg =
+            legParam && legs.some((l) => l.label === legParam)
+              ? legParam
+              : legs[0].label;
+          callId = legs.find((l) => l.label === selectedLeg)!.sipCallId;
+          if (!resolvedCalldate && data?.calldate)
+            resolvedCalldate = data.calldate;
+        } else if (data?.sipCallId) {
           callId = data.sipCallId;
           if (!resolvedCalldate && data?.calldate)
             resolvedCalldate = data.calldate;
@@ -279,16 +294,43 @@ export class CallRecordingController {
       `
       : '';
 
-    const notFoundNotice = !vmCall
-      ? `<div class="error">${t(lang, 'recording.notFoundNotice', {
-          dateHint: resolvedCalldate
-            ? ''
-            : t(lang, 'recording.notFoundDateHint'),
-          errHint: lookupError ? `: ${escapeHtml(lookupError)}` : '',
-        })}</div>`
+    const notFoundNotice =
+      !vmCall && !lookupError
+        ? `<div class="error">${t(lang, 'recording.notFoundNotice', {
+            dateHint: resolvedCalldate
+              ? ''
+              : t(lang, 'recording.notFoundDateHint'),
+          })}</div>`
+        : '';
+    const searchErrorNotice = lookupError
+      ? `<div class="error">${t(lang, 'recording.searchErrorNotice')}</div>`
       : '';
     const traceNotice = traceResolutionNotice
       ? `<div class="error">${escapeHtml(traceResolutionNotice)}</div>`
+      : '';
+
+    // Ссылка на разбор лога звонка (calltrace) — только когда искали по внутреннему trace id
+    // (дайлер/S2L), а не по "сырому" SIP Call-ID, иначе /calltrace/:id не найдёт такой лог.
+    const calltraceLink = looksLikeCallTraceId(originalQueryId)
+      ? `<a href="/calltrace/${encodeURIComponent(originalQueryId)}">${t(lang, 'recording.viewCallTrace')}</a>`
+      : '';
+
+    const legsMenu = legs.length
+      ? `<div class="meta" style="margin-bottom: 16px;">${legs
+          .map((l) => {
+            const params = new URLSearchParams({
+              callid: originalQueryId,
+              leg: l.label,
+            });
+            if (resolvedCalldate) params.set('calldate', resolvedCalldate);
+            const isActive = l.label === selectedLeg;
+            const label = t(
+              lang,
+              l.label === 'lead' ? 'recording.legLead' : 'recording.legAgent',
+            );
+            return `<a href="/call-recording/player?${params.toString()}" style="${isActive ? 'font-weight: 700; color: #eaeaea; border-bottom: 2px solid #7c3aed;' : ''} margin-right: 16px; padding-bottom: 2px;">${label}</a>`;
+          })
+          .join('')}</div>`
       : '';
 
     const html = `<!DOCTYPE html>
@@ -302,9 +344,11 @@ export class CallRecordingController {
 <body>
   ${renderSiteHeader(lang, req?.originalUrl || '/call-recording/player')}
   <h1>${t(lang, 'recording.playerH1')}</h1>
-  <div class="meta">Call-ID: ${escapeHtml(callId)}${originalQueryId !== callId ? t(lang, 'recording.byTraceId', { id: escapeHtml(originalQueryId) }) : ''} · <a href="/call-recording">${t(lang, 'recording.newSearch')}</a></div>
+  <div class="meta">Call-ID: ${escapeHtml(callId)}${originalQueryId !== callId ? t(lang, 'recording.byTraceId', { id: escapeHtml(originalQueryId) }) : ''} · <a href="/call-recording">${t(lang, 'recording.newSearch')}</a>${calltraceLink ? ` · ${calltraceLink}` : ''}</div>
 
+  ${legsMenu}
   ${traceNotice}
+  ${searchErrorNotice}
   ${notFoundNotice}
 
   ${vmCall ? `<section><h2>${t(lang, 'recording.callInfoTitle')}</h2><table>${metaRows}</table></section>` : ''}

@@ -101,9 +101,14 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.field.mosMin': 'MOS min',
     'recording.field.sipResponse': 'SIP response',
     'recording.notFoundNotice':
-      'Звонок не найден в CDR VoIPmonitor по этому Call-ID{dateHint}{errHint}. Аудио и pcap всё равно попробуем получить напрямую по Call-ID.',
+      'Звонок не найден в CDR VoIPmonitor по этому Call-ID{dateHint}. Аудио и pcap всё равно попробуем получить напрямую по Call-ID.',
     'recording.notFoundDateHint':
       ' (искали без даты — попробуйте указать дату звонка)',
+    'recording.searchErrorNotice':
+      '⚠️ Не удалось выполнить поиск звонка в VoIPmonitor — сервис временно недоступен или не ответил вовремя. Аудио и pcap всё равно попробуем получить напрямую по Call-ID.',
+    'recording.legAgent': 'Звонок агенту',
+    'recording.legLead': 'Звонок лиду',
+    'recording.viewCallTrace': 'Разбор лога звонка',
     'recording.audioSectionTitle': 'RTP-поток (аудио)',
     'recording.audioLoadHint':
       'Волна и спектрограмма строятся в браузере (wavesurfer.js) — загрузка занимает ~10–15 сек.',
@@ -349,9 +354,14 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.field.mosMin': 'MOS min',
     'recording.field.sipResponse': 'SIP response',
     'recording.notFoundNotice':
-      'The call was not found in the VoIPmonitor CDR by this Call-ID{dateHint}{errHint}. We will still try to fetch audio and pcap directly by Call-ID.',
+      'The call was not found in the VoIPmonitor CDR by this Call-ID{dateHint}. We will still try to fetch audio and pcap directly by Call-ID.',
     'recording.notFoundDateHint':
       ' (searched without a date — try specifying the call date)',
+    'recording.searchErrorNotice':
+      '⚠️ Failed to search for the call in VoIPmonitor — the service is temporarily unavailable or did not respond in time. We will still try to fetch audio and pcap directly by Call-ID.',
+    'recording.legAgent': 'Call to agent',
+    'recording.legLead': 'Call to lead',
+    'recording.viewCallTrace': 'View call log analysis',
     'recording.audioSectionTitle': 'RTP stream (audio)',
     'recording.audioLoadHint':
       'The waveform and spectrogram are rendered in the browser (wavesurfer.js) — loading takes ~10–15 sec.',
@@ -594,9 +604,14 @@ export const translations: Record<Lang, Record<string, string>> = {
     'recording.field.mosMin': 'MOS min',
     'recording.field.sipResponse': 'SIP response',
     'recording.notFoundNotice':
-      'لم يتم العثور على المكالمة في CDR الخاص بـ VoIPmonitor عبر Call-ID هذا{dateHint}{errHint}. سنحاول مع ذلك جلب الصوت وملف pcap مباشرة عبر Call-ID.',
+      'لم يتم العثور على المكالمة في CDR الخاص بـ VoIPmonitor عبر Call-ID هذا{dateHint}. سنحاول مع ذلك جلب الصوت وملف pcap مباشرة عبر Call-ID.',
     'recording.notFoundDateHint':
       ' (تم البحث بدون تاريخ — جرّب تحديد تاريخ المكالمة)',
+    'recording.searchErrorNotice':
+      '⚠️ تعذّر البحث عن المكالمة في VoIPmonitor — الخدمة غير متاحة مؤقتاً أو لم تستجب في الوقت المحدد. سنحاول مع ذلك جلب الصوت وملف pcap مباشرة عبر Call-ID.',
+    'recording.legAgent': 'الاتصال بالوكيل',
+    'recording.legLead': 'الاتصال بالعميل المحتمل',
+    'recording.viewCallTrace': 'عرض تحليل سجل المكالمة',
     'recording.audioSectionTitle': 'تدفق RTP (الصوت)',
     'recording.audioLoadHint':
       'يتم رسم الموجة الصوتية والطيف الترددي في المتصفح (wavesurfer.js) — يستغرق التحميل ~10–15 ثانية.',

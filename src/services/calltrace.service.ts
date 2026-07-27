@@ -190,6 +190,10 @@ export class CalltraceService {
       // Секция log: оставляем INVITE sip + связанные "Sent event to JS onPhoneEvent with params"
       let filteredLog: string | undefined;
       let sipCallId: string | undefined;
+      // Плечи callback-звонка (S2L "call me back"): сначала звонок агенту, затем — после
+      // "Notify sending to LeadCM"/TRY TO CALL LEAD — звонок лиду. У каждого плеча свой sipCallId
+      // в VoIPmonitor; сохраняем оба, чтобы call-recording мог показать запись любого из плеч.
+      const legs: Array<{ label: 'agent' | 'lead'; sipCallId: string }> = [];
       if (logSection) {
         const logLines = logSection.split('\n');
         const out: string[] = [];
@@ -487,6 +491,8 @@ export class CalltraceService {
         let call2clientCapture = false;
         // Флаг: видели "Notify sending to LeadCM"; сбрасывается после обнаружения INVITE в блоке Sent/Received
         let informLeadCall = false;
+        // Флаг: следующий Call.Connected относится к плечу "лид" (после TRY TO CALL LEAD), а не "агент"
+        let nextConnectIsLead = false;
         // Для формата 2: следующая строка после "дата время Sent" или "Received:" идёт в вывод
         let addNextLineAfterSentReceived = false;
         // Dialer (оба типа): при INVITE на sip.se.didlogic.net включаем режим как после "Notify sending to LeadCM" — выводим INVITE и строки "дата Sent:/Received:" + следующую
@@ -696,6 +702,7 @@ export class CalltraceService {
             if (isInviteLine && informLeadCall) {
               out.push('TRY TO CALL LEAD');
               informLeadCall = false;
+              nextConnectIsLead = true;
             }
             out.push(line.replace(/\r/g, ''));
             addNextLineAfterSentReceived = false;
@@ -1193,6 +1200,16 @@ export class CalltraceService {
                 // сохраняем первый sipCallId для верхнеуровневого поля (как раньше)
                 if (!sipCallId) sipCallId = connectedSipCallId;
 
+                // Плечи callback-звонка: помечаем найденный sipCallId как "agent" или "lead"
+                // в зависимости от того, встретился ли перед этим TRY TO CALL LEAD.
+                if (!legs.some((l) => l.sipCallId === connectedSipCallId)) {
+                  legs.push({
+                    label: nextConnectIsLead ? 'lead' : 'agent',
+                    sipCallId: connectedSipCallId,
+                  });
+                }
+                nextConnectIsLead = false;
+
                 const dateMatch = line.match(/^(\d{4}-\d{2}-\d{2})/);
                 const fdatefrom = dateMatch
                   ? `${dateMatch[1]}T00:00:00`
@@ -1609,6 +1626,7 @@ export class CalltraceService {
         ...(processedLog ? { log: processedLog } : {}),
         ...(sipCallId ? { sipCallId } : {}),
         ...(isDialerInbound ? { isDialerInbound: true } : {}),
+        ...(legs.length > 1 ? { legs } : {}),
       };
     } catch (error) {
       this.logger.error('Error formatting S2L log', {
