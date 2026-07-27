@@ -1758,19 +1758,52 @@ export class CalltraceService {
     }
     const events = `--- EVENTS ---\n${summaryLines.join('\n')}\n---`;
 
+    // callId дайлера начинается с Unix-времени (UTC) старта сессии, например
+    // "1785137505.066519" -> 1785137505. VoIPmonitor хранит calldate в локальном времени
+    // ОАЭ (UTC+4, без перехода на летнее/зимнее), так что по этому epoch можно вычислить точный
+    // calldate и найти звонок узким окном по времени — это надёжнее поиска по номеру звонящего:
+    // caller ID, который трак подставляет в реальный SIP INVITE, может не совпадать с тем, что
+    // указано в логе дайлера (confirmedCallerId/CONVOLO_CALLER_ID) — так и произошло со звонком
+    // 1785137505.066519: confirmedCallerId=966920033894, а в найденном CDR caller=020033894.
+    const UAE_UTC_OFFSET_MS = 4 * 60 * 60 * 1000;
+    const epochMatch = callId.match(/^(\d+)\./);
+    let narrowWindow: { fdatefrom: string; fdateto: string } | null = null;
+    if (epochMatch) {
+      const epochMs = Number(epochMatch[1]) * 1000;
+      const toUaeLocalString = (ms: number) =>
+        new Date(ms + UAE_UTC_OFFSET_MS).toISOString().slice(0, 19);
+      narrowWindow = {
+        fdatefrom: toUaeLocalString(epochMs - 5000),
+        fdateto: toUaeLocalString(epochMs + 20000),
+      };
+    }
+
     const out: string[] = [];
     let vmCall: any = null;
-    if (callerNormalized && calledNormalized) {
+    if (calledNormalized) {
       try {
-        const response = await this.voipmonitorService.getCalls({
-          limit: 1,
-          start: 0,
-          fdatefrom,
-          fcaller: callerNormalized,
-          fcalled: calledNormalized,
-          fcallerd_type: 1,
-        });
-        vmCall = response?.results?.[0] || null;
+        if (narrowWindow) {
+          const response = await this.voipmonitorService.getCalls({
+            limit: 1,
+            start: 0,
+            fdatefrom: narrowWindow.fdatefrom,
+            fdateto: narrowWindow.fdateto,
+            fcalled: calledNormalized,
+            fcallerd_type: 1,
+          });
+          vmCall = response?.results?.[0] || null;
+        }
+        if (!vmCall && callerNormalized) {
+          const response = await this.voipmonitorService.getCalls({
+            limit: 1,
+            start: 0,
+            fdatefrom,
+            fcaller: callerNormalized,
+            fcalled: calledNormalized,
+            fcallerd_type: 1,
+          });
+          vmCall = response?.results?.[0] || null;
+        }
       } catch (e: any) {
         this.logger.error(
           'Failed to find call in VoIPmonitor for dialer JSON log',
@@ -1779,6 +1812,7 @@ export class CalltraceService {
             callerA: callerNormalized,
             calledB: calledNormalized,
             fdatefrom,
+            narrowWindow,
             error: e?.message,
           },
         );
@@ -1872,13 +1906,13 @@ export class CalltraceService {
           { callId, error: e?.message },
         );
       }
-    } else if (callerNormalized && calledNormalized) {
+    } else if (calledNormalized) {
       out.push(
-        `--- VOIPMONITOR [caller: ${callerNormalized}, called: ${calledNormalized}] --- NOT FOUND ---`,
+        `--- VOIPMONITOR [caller: ${callerNormalized || 'N/A'}, called: ${calledNormalized}] --- NOT FOUND ---`,
       );
       out.push(`⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`);
       out.push(
-        `   Parameters: fdatefrom=${fdatefrom}, fcaller=${callerNormalized}, fcalled=${calledNormalized}, fcallerd_type=1`,
+        `   Parameters: fdatefrom=${fdatefrom}, fcaller=${callerNormalized || 'N/A'}, fcalled=${calledNormalized}, fcallerd_type=1${narrowWindow ? `, narrowWindow=${narrowWindow.fdatefrom}..${narrowWindow.fdateto}` : ''}`,
       );
       out.push(`---`);
     }
