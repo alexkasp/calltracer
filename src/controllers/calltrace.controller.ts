@@ -2,6 +2,7 @@ import { Controller, Get, Param, Query, Res, Req } from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { CalltraceService } from '../services/calltrace.service';
 import { renderSiteHeader } from '../utils/site-header';
+import { renderLoadingShell } from '../utils/loading-shell';
 import { resolveLang } from '../i18n/lang';
 import { t } from '../i18n/translate';
 
@@ -13,10 +14,26 @@ export class CalltraceController {
   async getCallTrace(
     @Param('id') id: string,
     @Query('format') format?: string,
+    @Query('_async') asyncFlag?: string,
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
     const lang = resolveLang(req);
+
+    // Разбор лога (VoIPmonitor/SBCtelco) может занимать несколько секунд — сначала отдаём
+    // лёгкую заглушку с прогресс-баром, реальный HTML подгружается через fetch (см. loading-shell.ts).
+    if (!format && !asyncFlag) {
+      res?.type('text/html; charset=utf-8');
+      const currentUrl =
+        req?.originalUrl || `/calltrace/${encodeURIComponent(id)}`;
+      const sep = currentUrl.includes('?') ? '&' : '?';
+      return renderLoadingShell(
+        lang,
+        currentUrl,
+        `${currentUrl}${sep}_async=1`,
+      );
+    }
+
     const result = await this.calltraceService.getCallTrace(id);
     const data: any = result?.data ?? {};
 

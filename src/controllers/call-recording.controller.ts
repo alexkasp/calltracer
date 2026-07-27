@@ -10,6 +10,7 @@ import type { Request, Response } from 'express';
 import { gunzipSync } from 'zlib';
 import { VoipmonitorService } from '../services/voipmonitor.service';
 import { renderSiteHeader } from '../utils/site-header';
+import { renderLoadingShell } from '../utils/loading-shell';
 import { CalltraceService } from '../services/calltrace.service';
 import { resolveLang } from '../i18n/lang';
 import { t } from '../i18n/translate';
@@ -130,6 +131,7 @@ export class CallRecordingController {
     @Query('callid') callid?: string,
     @Query('calldate') calldate?: string,
     @Query('leg') legParam?: string,
+    @Query('_async') asyncFlag?: string,
     @Req() req?: Request,
     @Res({ passthrough: true }) res?: Response,
   ) {
@@ -138,6 +140,20 @@ export class CallRecordingController {
     if (!callId) {
       throw new BadRequestException(t(lang, 'recording.callIdRequired'));
     }
+
+    // Поиск в VoIPmonitor/SBCtelco/Convolo может занимать несколько секунд — сначала отдаём
+    // лёгкую заглушку с прогресс-баром, реальный HTML подгружается через fetch (см. loading-shell.ts).
+    if (!asyncFlag) {
+      res?.type('text/html; charset=utf-8');
+      const currentUrl = req?.originalUrl || '/call-recording/player';
+      const sep = currentUrl.includes('?') ? '&' : '?';
+      return renderLoadingShell(
+        lang,
+        currentUrl,
+        `${currentUrl}${sep}_async=1`,
+      );
+    }
+
     const originalQueryId = callId;
     let resolvedCalldate = calldate;
     let traceResolutionNotice: string | null = null;

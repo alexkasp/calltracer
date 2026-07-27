@@ -19,6 +19,9 @@ export const translations: Record<Lang, Record<string, string>> = {
 
     // common
     'common.open': 'Открыть',
+    'common.loadingTitle': 'Загрузка…',
+    'common.loadingHint':
+      'Загружаем данные звонка — опрос VoIPmonitor/SBCtelco может занять несколько секунд.',
 
     // home (дашборд)
     'home.tagline':
@@ -273,6 +276,9 @@ export const translations: Record<Lang, Record<string, string>> = {
 
     // common
     'common.open': 'Open',
+    'common.loadingTitle': 'Loading…',
+    'common.loadingHint':
+      'Fetching call data — querying VoIPmonitor/SBCtelco can take a few seconds.',
 
     // home (dashboard)
     'home.tagline':
@@ -523,6 +529,9 @@ export const translations: Record<Lang, Record<string, string>> = {
 
     // common
     'common.open': 'فتح',
+    'common.loadingTitle': 'جارٍ التحميل…',
+    'common.loadingHint':
+      'جارٍ جلب بيانات المكالمة — قد يستغرق الاستعلام عن VoIPmonitor/SBCtelco بضع ثوانٍ.',
 
     // home (لوحة التحكم)
     'home.tagline':
