@@ -346,7 +346,9 @@ export class CallRecordingController {
                 ? t(lang, 'recording.legLead')
                 : l.label === 'agent'
                   ? t(lang, 'recording.legAgent')
-                  : t(lang, 'recording.attemptLabel', { n: l.label });
+                  : l.label === 'sbc'
+                    ? t(lang, 'recording.legSbc')
+                    : t(lang, 'recording.attemptLabel', { n: l.label });
             return `<a href="/call-recording/player?${params.toString()}" style="${isActive ? 'font-weight: 700; color: #eaeaea; border-bottom: 2px solid #7c3aed;' : ''} margin-right: 16px; padding-bottom: 2px;">${label}</a>`;
           })
           .join('')}</div>`
