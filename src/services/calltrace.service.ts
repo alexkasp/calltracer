@@ -899,6 +899,21 @@ export class CalltraceService {
               const m = line.match(/sipCallId\s*=\s*([^,;\]\s}]+)/);
               const failedSipCallId = m?.[1];
 
+              // Регистрируем как leg (как для Call.Connected) — иначе даже когда звонок реально
+              // найден в VoIPmonitor (см. вывод ниже), верхнеуровневые sipCallId/legs остаются
+              // пустыми, и call-recording/player ищет запись по "сырому" trace id, а не по SIP
+              // Call-ID — и ничего не находит.
+              if (
+                failedSipCallId &&
+                !legs.some((l) => l.sipCallId === failedSipCallId)
+              ) {
+                legs.push({
+                  label: nextConnectIsLead ? 'lead' : 'agent',
+                  sipCallId: failedSipCallId,
+                });
+              }
+              if (!sipCallId) sipCallId = failedSipCallId;
+
               const dateMatch = line.match(/^(\d{4}-\d{2}-\d{2})/);
               const fdatefrom = dateMatch
                 ? `${dateMatch[1]}T00:00:00`
