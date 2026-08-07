@@ -20,9 +20,18 @@ export class CalltraceController {
   ) {
     const lang = resolveLang(req);
 
+    // API-клиенты (curl/агенты без JS) шлют Accept: application/json и не могут выполнить
+    // fetch+document.write из loading-shell — раньше эта проверка стояла ниже, ПОСЛЕ отдачи
+    // HTML-заглушки, и поэтому никогда не срабатывала: такой клиент получал заглушку с прогресс-
+    // баром вместо данных и не мог их прочитать.
+    const acceptHeader = req?.headers?.accept || '';
+    const isApiRequest =
+      format === 'json' || acceptHeader.includes('application/json');
+
     // Разбор лога (VoIPmonitor/SBCtelco) может занимать несколько секунд — сначала отдаём
     // лёгкую заглушку с прогресс-баром, реальный HTML подгружается через fetch (см. loading-shell.ts).
-    if (!format && !asyncFlag) {
+    // Только для браузерной навигации — API-клиентов с этим сразу пропускаем к данным.
+    if (!format && !asyncFlag && !isApiRequest) {
       res?.type('text/html; charset=utf-8');
       const currentUrl =
         req?.originalUrl || `/calltrace/${encodeURIComponent(id)}`;
@@ -38,7 +47,7 @@ export class CalltraceController {
     const data: any = result?.data ?? {};
 
     // Если явно запрошен JSON формат
-    if (format === 'json') {
+    if (isApiRequest) {
       res?.type('application/json');
       return result;
     }
@@ -60,16 +69,6 @@ export class CalltraceController {
 
       res?.type('text/plain; charset=utf-8');
       return parts.join('\n');
-    }
-
-    // По умолчанию возвращаем HTML для браузера
-    const acceptHeader = req?.headers?.accept || '';
-    const isApiRequest =
-      acceptHeader.includes('application/json') || format === 'json';
-
-    if (isApiRequest) {
-      res?.type('application/json');
-      return result;
     }
 
     // HTML форматирование для браузера
