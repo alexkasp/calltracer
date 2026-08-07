@@ -18,6 +18,8 @@ export class CalltraceService {
     'https://api.ipmaxi.convolo.ai/api/v1/get-call-ai-log';
   private readonly leadsApiUrl =
     'https://api.leads.convolo.ai/api/v1/calls/log';
+  // callId дайлера (epoch.xxx) хранит Unix-время в UTC; VoIPmonitor пишет calldate в UAE-локали (без DST)
+  private readonly UAE_UTC_OFFSET_MS = 4 * 60 * 60 * 1000;
 
   // У SBC отдельный сетевой интерфейс на каждую внутреннюю АТС (172.21.231.16 — pbx15,
   // .17 — вторая АТС и т.д.), список неполный и будет расти по мере подключения новых АТС —
@@ -157,6 +159,16 @@ export class CalltraceService {
             }
           }
         }
+        // Новый формат dialer-inbound (без -----BEGIN SIP TRACE и без секции events:) —
+        // sipCallId берём из строки события Application.CallAlerting
+        if (!dialerInboundSipCallId) {
+          const alertingMatch = logText.match(
+            /name = Application\.CallAlerting[^\n]*?sipCallId = ([^\s;]+)/,
+          );
+          if (alertingMatch) {
+            dialerInboundSipCallId = alertingMatch[1].trim();
+          }
+        }
       }
 
       // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом)
@@ -199,9 +211,16 @@ export class CalltraceService {
 
       const events = `--- EVENTS ---\n${cleanedEventsSection.trim()}\n---`;
       const eventsDateMatch = events.match(/(\d{4}-\d{2}-\d{2})/);
+      // Формат dialer-inbound без секции events: даты в тексте лога нет вовсе —
+      // берём её из epoch-префикса callId (см. UAE_UTC_OFFSET_MS)
+      const callIdEpochMatch = callId.match(/^(\d+)\./);
       const fallbackFdatefrom = eventsDateMatch
         ? `${eventsDateMatch[1]}T00:00:00`
-        : undefined;
+        : callIdEpochMatch
+          ? `${new Date(Number(callIdEpochMatch[1]) * 1000 + this.UAE_UTC_OFFSET_MS)
+              .toISOString()
+              .slice(0, 10)}T00:00:00`
+          : undefined;
 
       // Секция log: оставляем INVITE sip + связанные "Sent event to JS onPhoneEvent with params"
       let filteredLog: string | undefined;
@@ -979,8 +998,11 @@ export class CalltraceService {
                           failedSipCallId,
                           fdatefrom,
                         );
-                    } else if (currentCallerA && currentCalledB) {
-                      // Ищем по номерам A и B
+                    }
+                    if (!vmCall && currentCallerA && currentCalledB) {
+                      // Fallback: sipCallId — внутренний ID движка Voximplant и не всегда
+                      // совпадает с реальным SIP Call-ID в VoIPmonitor (см. формат "psi_A_B_callId@pbx...");
+                      // если поиск по sipCallId не дал результата, ищем по номерам A и B
                       const searchUrl = this.buildVoipmonitorSearchUrl({
                         fdatefrom,
                         fcaller: currentCallerA,
@@ -1348,6 +1370,43 @@ export class CalltraceService {
                   voipCache.set(connectedSipCallId, vmCall);
                 }
 
+                if (!vmCall && fdatefrom && currentCallerA && currentCalledB) {
+                  // Fallback: sipCallId — внутренний ID движка Voximplant и не всегда совпадает
+                  // с реальным SIP Call-ID в VoIPmonitor (например, формат "psi_A_B_callId@pbx...");
+                  // если поиск по sipCallId не дал результата, ищем по номерам A и B
+                  const abFallbackCacheKey = `ab_connected_fallback_${currentCallerA}_${currentCalledB}_${fdatefrom}`;
+                  let abFallbackVmCall = voipCache.get(abFallbackCacheKey);
+                  if (abFallbackVmCall === undefined) {
+                    try {
+                      const response = await this.voipmonitorService.getCalls({
+                        limit: 1,
+                        start: 0,
+                        fdatefrom,
+                        fcaller: currentCallerA,
+                        fcalled: currentCalledB,
+                        fcallerd_type: 1,
+                      });
+                      abFallbackVmCall = response?.results?.[0] || null;
+                    } catch (e: any) {
+                      this.logger.error(
+                        'Failed to find call in VoIPmonitor by A/B fallback for Call.Connected',
+                        {
+                          callId,
+                          callerA: currentCallerA,
+                          calledB: currentCalledB,
+                          error: e?.message,
+                        },
+                      );
+                      abFallbackVmCall = null;
+                    }
+                    voipCache.set(abFallbackCacheKey, abFallbackVmCall);
+                  }
+                  if (abFallbackVmCall) {
+                    vmCall = abFallbackVmCall;
+                    voipCache.set(connectedSipCallId, vmCall);
+                  }
+                }
+
                 // Вставляем в общий лог сразу после Call.Connected в структурированном формате
                 if (vmCall) {
                   const displayNumbersConnected =
@@ -1617,7 +1676,7 @@ export class CalltraceService {
         // Dialer inbound: поиск в VoIPmonitor по callId из SIP TRACE (строка "i: <uuid>")
         if (isDialerInbound && dialerInboundSipCallId && fallbackFdatefrom) {
           const id = dialerInboundSipCallId;
-          let vmCall: any | null = voipCache.get(id) ?? null;
+          let vmCall: any | null | undefined = voipCache.get(id);
           let dialerInboundVmError = false;
           if (vmCall === undefined) {
             try {
@@ -1695,7 +1754,9 @@ export class CalltraceService {
           }
         }
 
-        if (foundInviteInLog && out.length > 0) {
+        // Для dialer-inbound без INVITE-трейса (новый формат pbxLog) единственный источник
+        // содержимого — блок VOIPMONITOR dialer-inbound выше, foundInviteInLog там не выставляется
+        if ((foundInviteInLog || isDialerInbound) && out.length > 0) {
           filteredLog = out.join('\n').trim();
         }
       }
@@ -1854,13 +1915,12 @@ export class CalltraceService {
     // caller ID, который трак подставляет в реальный SIP INVITE, может не совпадать с тем, что
     // указано в логе дайлера (confirmedCallerId/CONVOLO_CALLER_ID) — так и произошло со звонком
     // 1785137505.066519: confirmedCallerId=966920033894, а в найденном CDR caller=020033894.
-    const UAE_UTC_OFFSET_MS = 4 * 60 * 60 * 1000;
     const epochMatch = callId.match(/^(\d+)\./);
     let narrowWindow: { fdatefrom: string; fdateto: string } | null = null;
     if (epochMatch) {
       const epochMs = Number(epochMatch[1]) * 1000;
       const toUaeLocalString = (ms: number) =>
-        new Date(ms + UAE_UTC_OFFSET_MS).toISOString().slice(0, 19);
+        new Date(ms + this.UAE_UTC_OFFSET_MS).toISOString().slice(0, 19);
       narrowWindow = {
         fdatefrom: toUaeLocalString(epochMs - 5000),
         fdateto: toUaeLocalString(epochMs + 20000),
