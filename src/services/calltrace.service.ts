@@ -193,6 +193,18 @@ export class CalltraceService {
           logSection = logText.substring(logSectionIndex);
         } else {
           eventsSection = logText.substring(eventsIndex);
+          // Новый формат без сырого SIP-трейса и без отдельной секции "log" — весь текст events
+          // состоит из строк вида "<ts> A -> B host label sent to SBC/trunk" (нет "-----BEGIN SIP
+          // TRACE"). Из строки "... s4y<N> ... sent to SBC" (плечо ДО SBC — именно его видит
+          // VoIPmonitor) так же можно достать номера A/Б и поискать звонок, поэтому пропускаем
+          // текст ещё и как logSection.
+          if (
+            /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\s+\d+\s+->\s+\d+\s+s4y\d+\s+\S+\s+sent to SBC\b/m.test(
+              logText,
+            )
+          ) {
+            logSection = logText;
+          }
         }
       } else {
         // Нет секции events (например, дайлер pbxLog) — весь текст как секция log
@@ -1758,6 +1770,121 @@ export class CalltraceService {
             }
           } else if (!dialerInboundVmError) {
             out.push(`VOIPMONITOR dialer-inbound sipCallId=${id} not found`);
+          }
+        }
+
+        // Новый формат pbxLog: нет ни SIP-трейса, ни JSON dialer-лога (isDialerJsonLog) — только
+        // текстовые строки вида "<ts> A -> B host label sent to SBC/trunk". Берём номера A/Б из
+        // первой строки "... s4y<N> ... sent to SBC" (плечо ДО SBC — то, что реально видит
+        // VoIPmonitor; "sent to <trunk>" — уже следующий хоп ПОСЛЕ SBC, номера там могут не
+        // совпасть с CDR) и ищем звонок в VoIPmonitor так же, как для остальных форматов.
+        if (!foundInviteInLog && !isDialerInbound) {
+          const sbcLegMatch = logSection.match(
+            /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})(?:\.\d+)?Z?\s+(\d+)\s+->\s+(\d+)\s+s4y\d+\s+\S+\s+sent to SBC\b/m,
+          );
+          if (sbcLegMatch) {
+            const [, , rawA, rawB] = sbcLegMatch;
+            const eventsCallerA = normalizeNumber(rawA);
+            const eventsCalledB = rawB;
+            out.push(`--- NEW CALL INVITE ---`);
+            out.push(`  From: ${eventsCallerA} -> To: ${eventsCalledB}`);
+            out.push(`---`);
+
+            if (fallbackFdatefrom) {
+              try {
+                const searchUrl = this.buildVoipmonitorSearchUrl({
+                  fdatefrom: fallbackFdatefrom,
+                  fcaller: eventsCallerA,
+                  fcalled: eventsCalledB,
+                  fcallerd_type: 1,
+                });
+                const response = await this.voipmonitorService.getCalls({
+                  limit: 1,
+                  start: 0,
+                  fdatefrom: fallbackFdatefrom,
+                  fcaller: eventsCallerA,
+                  fcalled: eventsCalledB,
+                  fcallerd_type: 1,
+                });
+                const vmCall = response?.results?.[0] || null;
+                if (vmCall) {
+                  out.push(
+                    `--- VOIPMONITOR [caller: ${eventsCallerA}, called: ${eventsCalledB}] ---`,
+                  );
+                  out.push(`  ID: ${vmCall.ID || 'N/A'}`);
+                  out.push(
+                    `  Call-ID (fbasename): ${vmCall.fbasename || vmCall.callid || 'N/A'}`,
+                  );
+                  out.push(
+                    `  Time: ${vmCall.calldate || 'N/A'} - ${vmCall.callend || 'N/A'} (duration: ${vmCall.duration || 'N/A'})`,
+                  );
+                  out.push(
+                    `  Caller: ${vmCall.caller || 'N/A'} -> Called: ${vmCall.called || 'N/A'}`,
+                  );
+                  out.push(
+                    `  IPs: ${vmCall.sipcallerip || 'N/A'}:${vmCall.sipcallerport || 'N/A'} -> ${vmCall.sipcalledip || 'N/A'}:${vmCall.sipcalledport || 'N/A'}`,
+                  );
+                  out.push(
+                    `  Result: ${vmCall.lastSIPresponseNum || 'N/A'} ${vmCall.lastSIPresponse || ''} | Who hung up: ${vmCall.whohanged || 'N/A'}`,
+                  );
+                  if (vmCall.lost || vmCall.jitter || vmCall.mos_min) {
+                    out.push(
+                      `  Quality: lost=${vmCall.lost || 0} packets, jitter=${vmCall.jitter || 0}ms, MOS=${vmCall.mos_min || 'N/A'}, packet_loss=${vmCall.packet_loss_perc || 0}%`,
+                    );
+                  }
+                  if (vmCall.a_codec || vmCall.b_codec) {
+                    out.push(
+                      `  Codecs: A=${vmCall.a_codec || 'N/A'}, B=${vmCall.b_codec || 'N/A'}`,
+                    );
+                  }
+                  out.push(`---`);
+
+                  if (!sipCallId)
+                    sipCallId = vmCall.fbasename || vmCall.callid;
+                  await appendSipHistory(vmCall, `id=${vmCall.ID || 'N/A'}`);
+                  if (
+                    this.isSbcDestinationIp(vmCall.sipcalledip) &&
+                    (vmCall.fbasename || vmCall.callid)
+                  ) {
+                    await appendSbctelcoTraceByCallId(
+                      vmCall.fbasename || vmCall.callid,
+                    );
+                    registerSbcLeg(vmCall);
+                  }
+                } else {
+                  out.push(
+                    `--- VOIPMONITOR [caller: ${eventsCallerA}, called: ${eventsCalledB}] --- NOT FOUND ---`,
+                  );
+                  out.push(
+                    `⚠️  WARNING: Call not found in VoIPmonitor by A/B numbers`,
+                  );
+                  out.push(`   Search URL: ${searchUrl}`);
+                  out.push(
+                    `   Parameters: fdatefrom=${fallbackFdatefrom}, fcaller=${eventsCallerA}, fcalled=${eventsCalledB}, fcallerd_type=1`,
+                  );
+                  out.push(`---`);
+                }
+              } catch (e: any) {
+                this.logger.error(
+                  'Failed to find call in VoIPmonitor for events-only sent-to-SBC log',
+                  {
+                    callId,
+                    callerA: eventsCallerA,
+                    calledB: eventsCalledB,
+                    error: e?.message,
+                  },
+                );
+                const errorJson = JSON.stringify({
+                  message: e?.message,
+                  status: e?.status,
+                  response: e?.response,
+                }).replace(/\\"/g, '"');
+                out.push(
+                  `VOIPMONITOR caller=${eventsCallerA} called=${eventsCalledB} error ${errorJson}`,
+                );
+              }
+            }
+            foundInviteInLog = true;
           }
         }
 
