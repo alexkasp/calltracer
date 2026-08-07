@@ -50,8 +50,13 @@ function normalizeIp(ip: string): string {
 function isIpInCidr(ip: string, cidr: string): boolean {
   const normalizedIp = normalizeIp(ip.trim());
   const [range, prefixStr] = cidr.trim().split('/');
+  if (range.includes(':')) {
+    // IPv6 (например "::1" или "::1/128") — поддерживаем только точное совпадение, префиксную
+    // арифметику не считаем: единственный реальный кейс здесь — IPv6-loopback, а не подсети.
+    return normalizedIp === range;
+  }
   if (!prefixStr) {
-    // Без маски (например "::1") — точное совпадение
+    // Без маски — точное совпадение
     return normalizedIp === range;
   }
   const ipInt = ipv4ToInt(normalizedIp);
