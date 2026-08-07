@@ -171,8 +171,15 @@ export class CalltraceService {
         }
       }
 
-      // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом)
-      const eventsIndex = logText.indexOf('events:');
+      // Ищем начало секции events (в дайлере pbxLog секции events: нет — весь текст считаем логом).
+      // Матчим только "events:" в начале строки — иначе на звонках, где к вебхуку (Zapier и т.п.)
+      // прилетела ошибка axios с JS stack trace, indexOf ложно цепляет "node:events:521:24" внутри
+      // JSON-строки ошибки, весь текст после этого места считается events, logSection остаётся null,
+      // и SIP-трейс/поиск в VoIPmonitor для звонка не выполняется вообще (см. callId 1786088879.12106).
+      const eventsHeaderMatch = logText.match(/(?:^|\n)events:/);
+      const eventsIndex = eventsHeaderMatch
+        ? eventsHeaderMatch.index! + eventsHeaderMatch[0].length - 'events:'.length
+        : -1;
       const hasEventsSection = eventsIndex !== -1;
       const logSectionIndex = hasEventsSection
         ? logText.indexOf('\n\n log', eventsIndex)
