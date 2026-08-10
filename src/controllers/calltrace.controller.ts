@@ -64,6 +64,44 @@ export class CalltraceController {
       );
     }
 
+    // Крон хранит каждое плечо отдельной записью (id = "leg:0x..."), поэтому из БД приходит
+    // только одно плечо звонка. Дотягиваем недостающие по other_leg_id, чтобы в экспорте были
+    // обе стороны (Incoming + Outgoing), как в оригинальном вендорском файле.
+    const legKeys = () => Object.keys(raw).filter((k) => k !== '***meta***');
+    const presentLegIds = new Set(
+      legKeys()
+        .map((k) => raw[k]?.leg_id)
+        .filter((v: unknown) => v != null)
+        .map(String),
+    );
+    const missingOtherLegIds = [
+      ...new Set(
+        legKeys()
+          .map((k) => raw[k]?.other_leg_id)
+          .filter(
+            (v: unknown) =>
+              v != null &&
+              String(v).trim() !== '' &&
+              !presentLegIds.has(String(v)),
+          )
+          .map(String),
+      ),
+    ];
+    for (const otherLegId of missingOtherLegIds) {
+      const otherRecord = await this.sbctelcoService.findById(
+        `leg:${otherLegId}`,
+      );
+      const otherPayload = otherRecord?.payload;
+      if (!otherPayload || typeof otherPayload !== 'object') continue;
+      for (const [k, v] of Object.entries(otherPayload)) {
+        if (k === '***meta***' || !v || typeof v !== 'object') continue;
+        if (presentLegIds.has(String((v as any).leg_id))) continue;
+        raw[`other:${k}`] = v;
+        if ((v as any).leg_id != null)
+          presentLegIds.add(String((v as any).leg_id));
+      }
+    }
+
     // Имя файла как у вендора: call_trace_<leg_id>.html
     const firstLegId = Object.keys(raw)
       .filter((k) => k !== '***meta***')

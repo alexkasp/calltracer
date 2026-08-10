@@ -633,6 +633,12 @@ export class SbctelcoService {
     return this.sbctraceRepo.findOne({ where: { callId: callId.trim() } });
   }
 
+  /** Найти запись sbctrace по её id (формат "leg:0x..."), null если нет. */
+  async findById(id: string): Promise<Sbctrace | null> {
+    if (!id?.trim()) return null;
+    return this.sbctraceRepo.findOne({ where: { id: id.trim() } });
+  }
+
   formatCallTraceText(raw: any): string {
     if (!raw || typeof raw !== 'object') return '';
 

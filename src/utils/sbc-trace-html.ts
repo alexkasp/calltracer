@@ -76,17 +76,21 @@ function parseLegs(raw: any): SbcLeg[] {
     }
     traces.sort((a, b) => a.order - b.order);
 
-    // Плечо входящее/исходящее: по тултипу первого сетевого сообщения ("New call in"/"New call out")
-    let incoming = false;
-    for (const t of traces) {
-      const tip = t.trace_tooltip.trim();
-      if (/^New call in\b/i.test(tip)) {
-        incoming = true;
-        break;
-      }
-      if (/^New call out\b/i.test(tip)) {
-        incoming = false;
-        break;
+    // Плечо входящее/исходящее: поле direction самого звонка ('1' = входящее в SBC,
+    // '2' = исходящее в транк — проверено на живых данных: 1 всегда у NAP_P1S1_BRIGHTCALL);
+    // фолбэк — тултип первого сетевого сообщения ("New call in"/"New call out")
+    let incoming = String(call.direction ?? '') === '1';
+    if (call.direction == null) {
+      for (const t of traces) {
+        const tip = t.trace_tooltip.trim();
+        if (/^New call in\b/i.test(tip)) {
+          incoming = true;
+          break;
+        }
+        if (/^New call out\b/i.test(tip)) {
+          incoming = false;
+          break;
+        }
       }
     }
 
@@ -108,8 +112,12 @@ function parseLegs(raw: any): SbcLeg[] {
       legId: call.leg_id != null ? String(call.leg_id) : key,
       nap: call.nap != null ? String(call.nap) : '',
       protocol: call.protocol != null ? String(call.protocol) : '',
+      // Эпоха 1970 = звонок не был отвечен, connect-времени нет
       connectTimestamp:
-        call.connect_timestamp != null ? String(call.connect_timestamp) : '',
+        call.connect_timestamp != null &&
+        !String(call.connect_timestamp).startsWith('1970')
+          ? String(call.connect_timestamp)
+          : '',
       timestamp: call.timestamp != null ? String(call.timestamp) : '',
       calling: call.calling != null ? String(call.calling) : '',
       called: call.called != null ? String(call.called) : '',
