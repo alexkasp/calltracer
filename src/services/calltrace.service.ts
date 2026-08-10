@@ -2201,8 +2201,27 @@ export class CalltraceService {
             call_id: callSipCallId,
             recursive: 'yes',
           });
+          let sbcText = this.sbctelcoService.formatCallTraceText(raw);
+          // Живой SBCtelco API хранит звонки недолго (ретеншен) и для старых отдаёт только
+          // ***meta*** без данных — как и в formatS2LLog, добираем запись из локальной БД
+          // sbclogs.sbctrace (крон складывает туда каждое плечо по тому же call_id).
+          if (!/=== Call \d+/.test(sbcText)) {
+            const record =
+              await this.sbctelcoService.findByCallId(callSipCallId);
+            if (record?.payload) {
+              const dbText = this.sbctelcoService.formatCallTraceText(
+                record.payload,
+              );
+              if (/=== Call \d+/.test(dbText)) {
+                out.push(
+                  `ℹ️  SBCtelco: not in live API, found in local DB (sbclogs.sbctrace)`,
+                );
+                sbcText = dbText;
+              }
+            }
+          }
           out.push(`--- SBCTELCO${attemptTag} [call_id: ${callSipCallId}] ---`);
-          out.push(this.sbctelcoService.formatCallTraceText(raw));
+          out.push(sbcText);
           out.push(`---`);
         } else if (callerNormalized && calledNormalized) {
           const timeRange = call.calldate
