@@ -54,27 +54,53 @@ function parseLegs(raw: any): SbcLeg[] {
   if (!raw || typeof raw !== 'object') return [];
   const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
 
-  const legs: SbcLeg[] = [];
+  // Каждая запись звонка (особенно из БД, где легы хранятся отдельными записями) содержит
+  // call_traces ОБОИХ плеч — каждая строка трейса помечена своим leg (поле t.leg). Поэтому:
+  // 1) плечо строки определяем по её leg-тегу (а не по звонку-владельцу записи),
+  // 2) дедуплицируем строки между записями — иначе при слиянии двух записей одного звонка
+  //    каждое SIP-сообщение появлялось в лестнице дважды, в цветах обоих плеч.
+  const legMeta = new Map<string, { key: string; call: any }>();
   for (const key of callKeys) {
     const call = raw[key];
     if (!call || typeof call !== 'object') continue;
+    const legId = call.leg_id != null ? String(call.leg_id) : key;
+    if (!legMeta.has(legId)) legMeta.set(legId, { key, call });
+  }
 
+  const tracesByLeg = new Map<string, SbcTraceItem[]>();
+  const seen = new Set<string>();
+  for (const key of callKeys) {
+    const call = raw[key];
+    if (!call || typeof call !== 'object') continue;
+    const ownerLegId = call.leg_id != null ? String(call.leg_id) : key;
     const tracesObj = call.call_traces;
-    const traces: SbcTraceItem[] = [];
-    if (tracesObj && typeof tracesObj === 'object') {
-      for (const [tk, t] of Object.entries(tracesObj) as Array<[string, any]>) {
-        if (tk === '***meta***' || !t || typeof t !== 'object') continue;
-        if (t.order === undefined) continue;
-        traces.push({
-          order: Number(t.order),
-          timestamp: t.timestamp ? String(t.timestamp) : '',
-          direction: t.direction !== undefined ? String(t.direction) : '',
-          trace_info: t.trace_info ? String(t.trace_info) : '',
-          trace_tooltip: t.trace_tooltip ? String(t.trace_tooltip) : '',
-        });
-      }
+    if (!tracesObj || typeof tracesObj !== 'object') continue;
+    for (const [tk, t] of Object.entries(tracesObj) as Array<[string, any]>) {
+      if (tk === '***meta***' || !t || typeof t !== 'object') continue;
+      if (t.order === undefined) continue;
+      const item: SbcTraceItem = {
+        order: Number(t.order),
+        timestamp: t.timestamp ? String(t.timestamp) : '',
+        direction: t.direction !== undefined ? String(t.direction) : '',
+        trace_info: t.trace_info ? String(t.trace_info) : '',
+        trace_tooltip: t.trace_tooltip ? String(t.trace_tooltip) : '',
+      };
+      const itemLegId = t.leg ? String(t.leg) : ownerLegId;
+      const dedupKey = `${itemLegId}|${item.timestamp}|${item.direction}|${item.trace_info}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
+      if (!tracesByLeg.has(itemLegId)) tracesByLeg.set(itemLegId, []);
+      tracesByLeg.get(itemLegId)!.push(item);
     }
-    traces.sort((a, b) => a.order - b.order);
+  }
+
+  const legs: SbcLeg[] = [];
+  const allLegIds = new Set<string>([...legMeta.keys(), ...tracesByLeg.keys()]);
+  for (const legId of allLegIds) {
+    const call = legMeta.get(legId)?.call ?? {};
+    const traces = (tracesByLeg.get(legId) ?? []).sort(
+      (a, b) => a.order - b.order,
+    );
 
     // Плечо входящее/исходящее: поле direction самого звонка ('1' = входящее в SBC,
     // '2' = исходящее в транк — проверено на живых данных: 1 всегда у NAP_P1S1_BRIGHTCALL);
@@ -108,8 +134,8 @@ function parseLegs(raw: any): SbcLeg[] {
     }
 
     legs.push({
-      key,
-      legId: call.leg_id != null ? String(call.leg_id) : key,
+      key: legMeta.get(legId)?.key ?? legId,
+      legId,
       nap: call.nap != null ? String(call.nap) : '',
       protocol: call.protocol != null ? String(call.protocol) : '',
       // Эпоха 1970 = звонок не был отвечен, connect-времени нет
@@ -118,7 +144,10 @@ function parseLegs(raw: any): SbcLeg[] {
         !String(call.connect_timestamp).startsWith('1970')
           ? String(call.connect_timestamp)
           : '',
-      timestamp: call.timestamp != null ? String(call.timestamp) : '',
+      timestamp:
+        call.timestamp != null
+          ? String(call.timestamp)
+          : (traces[0]?.timestamp ?? ''),
       calling: call.calling != null ? String(call.calling) : '',
       called: call.called != null ? String(call.called) : '',
       terminateReason:
