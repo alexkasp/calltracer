@@ -1904,6 +1904,8 @@ export class CalltraceService {
         ? filteredLog.replace(/\\n/g, '\n')
         : filteredLog;
 
+      const sbcTraces = this.extractSbcTraceCallIds(processedLog);
+
       return {
         success: data?.success ?? true,
         events: processedEvents,
@@ -1911,6 +1913,7 @@ export class CalltraceService {
         ...(sipCallId ? { sipCallId } : {}),
         ...(isDialerInbound ? { isDialerInbound: true } : {}),
         ...(legs.length > 1 ? { legs } : {}),
+        ...(sbcTraces.length ? { sbcTraces } : {}),
       };
     } catch (error) {
       this.logger.error('Error formatting S2L log', {
@@ -2236,17 +2239,38 @@ export class CalltraceService {
       out.push(`---`);
     }
 
+    const dialerLogText = out.join('\n');
+    const sbcTraces = this.extractSbcTraceCallIds(dialerLogText);
+
     return {
       success: true,
       events,
-      ...(out.length ? { log: out.join('\n') } : {}),
+      ...(out.length ? { log: dialerLogText } : {}),
       ...(sipCallId ? { sipCallId } : {}),
       ...(vmCall?.ID ? { cdrId: String(vmCall.ID) } : {}),
       ...(vmCall?.calldate
         ? { calldate: String(vmCall.calldate).slice(0, 10) }
         : {}),
       ...(legs.length > 1 ? { legs } : {}),
+      ...(sbcTraces.length ? { sbcTraces } : {}),
     };
+  }
+
+  /**
+   * SIP Call-ID SBC-трейсов, реально найденных в логе (для кнопки "скачать HTML-трейс SBC" на
+   * странице). Строки "[<leg_id>] call_id: <id>" пишет formatCallTraceText только когда данные
+   * по звонку реально получены (из живого API или БД) — заголовок "--- SBCTELCO [call_id: X]"
+   * не подходит: он выводится и в блоке "call not found".
+   */
+  private extractSbcTraceCallIds(logText?: string): string[] {
+    if (!logText) return [];
+    const ids = new Set<string>();
+    const re = /^\[[^\]]+\] call_id:\s*(\S+)$/gm;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(logText)) !== null) {
+      ids.add(m[1]);
+    }
+    return [...ids];
   }
 
   private getApiUrl(callId: string): string {

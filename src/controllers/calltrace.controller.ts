@@ -1,14 +1,83 @@
-import { Controller, Get, Param, Query, Res, Req } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Param,
+  Query,
+  Res,
+  Req,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import type { Response, Request } from 'express';
 import { CalltraceService } from '../services/calltrace.service';
+import { SbctelcoService } from '../services/sbctelco.service';
 import { renderSiteHeader } from '../utils/site-header';
 import { renderLoadingShell } from '../utils/loading-shell';
+import { renderSbcTraceHtml } from '../utils/sbc-trace-html';
 import { resolveLang } from '../i18n/lang';
 import { t } from '../i18n/translate';
 
 @Controller('calltrace')
 export class CalltraceController {
-  constructor(private readonly calltraceService: CalltraceService) {}
+  constructor(
+    private readonly calltraceService: CalltraceService,
+    private readonly sbctelcoService: SbctelcoService,
+  ) {}
+
+  /**
+   * Скачивание SBC-трейса в HTML-формате TelcoBridges (как "Export trace" в веб-морде SBC).
+   * Данные берутся из живого SBCtelco API, при ретеншене — из локальной БД sbclogs.sbctrace.
+   * ВАЖНО: роут объявлен раньше @Get(':id'), иначе ':id' перехватит путь.
+   */
+  @Get('sbc-trace.html')
+  async downloadSbcTrace(
+    @Query('call_id') callId: string,
+    @Res() res: Response,
+  ) {
+    if (!callId?.trim()) {
+      throw new BadRequestException('call_id query parameter is required');
+    }
+    const id = callId.trim();
+
+    const hasCallData = (raw: any): boolean =>
+      !!raw &&
+      typeof raw === 'object' &&
+      Object.keys(raw).some((k) => k !== '***meta***');
+
+    let raw: any = null;
+    try {
+      raw = await this.sbctelcoService.getCallTrace({
+        nb_result: 2,
+        call_id: id,
+        recursive: 'yes',
+      });
+    } catch {
+      // живой API недоступен/ошибка — пробуем БД ниже
+    }
+    if (!hasCallData(raw)) {
+      const record = await this.sbctelcoService.findByCallId(id);
+      raw = record?.payload ?? null;
+    }
+    if (!hasCallData(raw)) {
+      throw new NotFoundException(
+        `SBC trace not found for call_id ${id} (neither live API nor local DB)`,
+      );
+    }
+
+    // Имя файла как у вендора: call_trace_<leg_id>.html
+    const firstLegId = Object.keys(raw)
+      .filter((k) => k !== '***meta***')
+      .map((k) => raw[k]?.leg_id)
+      .find((v) => v != null);
+    const safeName = String(firstLegId ?? id).replace(/[^\w.-]/g, '_');
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="call_trace_${safeName}.html"`,
+    );
+    res.send(renderSbcTraceHtml(raw, id));
+  }
 
   @Get(':id')
   async getCallTrace(
@@ -176,7 +245,16 @@ export class CalltraceController {
       <strong>${t(lang, 'calltrace.callId')}</strong> ${escapeHtml(result?.callId || '')}<br>
       <strong>${t(lang, 'calltrace.callType')}</strong> ${escapeHtml(result?.callType || t(lang, 'calltrace.unknown'))}<br>
       ${data?.sipCallId ? `<strong>${t(lang, 'calltrace.sipCallId')}</strong> ${escapeHtml(data.sipCallId)}<br>` : ''}
-      <strong>${t(lang, 'calltrace.format')}</strong> <a href="?format=json">JSON</a> | <a href="?format=text">Text</a>
+      <strong>${t(lang, 'calltrace.format')}</strong> <a href="?format=json">JSON</a> | <a href="?format=text">Text</a>${
+        Array.isArray(data?.sbcTraces) && data.sbcTraces.length
+          ? `<br><strong>SBC trace:</strong> ${data.sbcTraces
+              .map(
+                (id: string) =>
+                  `<a href="/calltrace/sbc-trace.html?call_id=${encodeURIComponent(id)}" download>⬇ ${escapeHtml(id)}</a>`,
+              )
+              .join(' | ')}`
+          : ''
+      }
     </div>
   </div>`;
 
