@@ -1997,8 +1997,21 @@ export class CalltraceService {
       return n.startsWith('971') ? `0${n.slice(3)}` : n;
     };
     const callerNormalized = normalizeNumber(callerA);
-    // clientPhone/CONVOLO_DESTINATION уже в локальном формате (0XXXXXXXXX), нормализация не нужна
-    const calledNormalized = calledB;
+    // clientPhone/CONVOLO_DESTINATION приходит по-разному: локальный "05XXXXXXXX",
+    // международный с кодом ОАЭ "9715XXXXXXXX" (звонок 1786374905.062959) или другой страны
+    // "966500161834". АТС же набирает (и VoIPmonitor хранит) ОАЭ локально ("05...") и
+    // международку с 00-префиксом ("00966...") — приводим к формату набора; сырой вариант
+    // оставляем запасным кандидатом поиска.
+    const normalizeCalled = (n?: string): string | undefined => {
+      if (!n) return n;
+      if (n.startsWith('971')) return `0${n.slice(3)}`;
+      if (n.startsWith('0')) return n; // уже локальный или 00-международный
+      return `00${n}`;
+    };
+    const calledNormalized = normalizeCalled(calledB);
+    const calledCandidates = [
+      ...new Set([calledNormalized, calledB].filter(Boolean)),
+    ] as string[];
 
     // fdatefrom для VoIPmonitor: берём naive wall-clock из channel.creationtime (совпадает с calldate в VoIPmonitor,
     // т.к. это то же серверное локальное время), иначе — дата первой строки лога с 00:00:00
@@ -2071,52 +2084,61 @@ export class CalltraceService {
     if (calledNormalized) {
       try {
         if (narrowWindow) {
-          const response = await this.voipmonitorService.getCalls({
-            limit: 5,
-            start: 0,
-            fdatefrom: narrowWindow.fdatefrom,
-            fdateto: narrowWindow.fdateto,
-            fcalled: calledNormalized,
-            fcallerd_type: 1,
-          });
-          const results: any[] = response?.results || [];
-          vmCall = results[0] || null;
-
-          // Одна и та же сессия дайлера иногда попадает в VoIPmonitor несколькими CDR-записями —
-          // повторные попытки дозвона в рамках долей секунды (см. постмортем: 1785137505.066519 ->
-          // CDR 26753600 и 26753601, разница по calldate < 1с). Группируем их как "попытки", чтобы
-          // и лог calltrace, и call-recording могли показать каждую отдельно.
-          if (vmCall) {
-            const baseTime = Date.parse(
-              String(vmCall.calldate || '').replace(' ', 'T'),
-            );
-            const attempts = results.filter((r) => {
-              const t = Date.parse(String(r.calldate || '').replace(' ', 'T'));
-              return (
-                !Number.isNaN(baseTime) &&
-                !Number.isNaN(t) &&
-                Math.abs(t - baseTime) < 1000
-              );
+          // Пробуем кандидатов формата Б по очереди (нормализованный, затем сырой из лога)
+          for (const calledCandidate of calledCandidates) {
+            const response = await this.voipmonitorService.getCalls({
+              limit: 5,
+              start: 0,
+              fdatefrom: narrowWindow.fdatefrom,
+              fdateto: narrowWindow.fdateto,
+              fcalled: calledCandidate,
+              fcallerd_type: 1,
             });
-            if (attempts.length > 1) {
-              attemptCalls = attempts;
-              attempts.forEach((r, i) => {
-                const sid = r.fbasename || r.callid;
-                if (sid) legs.push({ label: String(i + 1), sipCallId: sid });
+            const results: any[] = response?.results || [];
+            vmCall = results[0] || null;
+
+            // Одна и та же сессия дайлера иногда попадает в VoIPmonitor несколькими CDR-записями —
+            // повторные попытки дозвона в рамках долей секунды (см. постмортем: 1785137505.066519 ->
+            // CDR 26753600 и 26753601, разница по calldate < 1с). Группируем их как "попытки", чтобы
+            // и лог calltrace, и call-recording могли показать каждую отдельно.
+            if (vmCall) {
+              const baseTime = Date.parse(
+                String(vmCall.calldate || '').replace(' ', 'T'),
+              );
+              const attempts = results.filter((r) => {
+                const t = Date.parse(
+                  String(r.calldate || '').replace(' ', 'T'),
+                );
+                return (
+                  !Number.isNaN(baseTime) &&
+                  !Number.isNaN(t) &&
+                  Math.abs(t - baseTime) < 1000
+                );
               });
+              if (attempts.length > 1) {
+                attemptCalls = attempts;
+                attempts.forEach((r, i) => {
+                  const sid = r.fbasename || r.callid;
+                  if (sid) legs.push({ label: String(i + 1), sipCallId: sid });
+                });
+              }
+              break;
             }
           }
         }
         if (!vmCall && callerNormalized) {
-          const response = await this.voipmonitorService.getCalls({
-            limit: 1,
-            start: 0,
-            fdatefrom,
-            fcaller: callerNormalized,
-            fcalled: calledNormalized,
-            fcallerd_type: 1,
-          });
-          vmCall = response?.results?.[0] || null;
+          for (const calledCandidate of calledCandidates) {
+            const response = await this.voipmonitorService.getCalls({
+              limit: 1,
+              start: 0,
+              fdatefrom,
+              fcaller: callerNormalized,
+              fcalled: calledCandidate,
+              fcallerd_type: 1,
+            });
+            vmCall = response?.results?.[0] || null;
+            if (vmCall) break;
+          }
         }
       } catch (e: any) {
         this.logger.error(
