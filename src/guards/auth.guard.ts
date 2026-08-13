@@ -1,18 +1,39 @@
-import { Injectable, CanActivate, ExecutionContext, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  Logger,
+} from '@nestjs/common';
 import type { Request, Response } from 'express';
+import * as crypto from 'crypto';
 import { AuthService, SESSION_COOKIE_NAME } from '../services/auth.service';
 
 const PUBLIC_PATHS = new Set(['/login', '/logout', '/set-lang']);
 
-// Доверенные сети, для которых не требуется логин куки-сессией (например AI-агент, работающий
-// на том же хосте dev.uae и обращающийся напрямую к порту сервиса). Настраивается через
-// AUTH_TRUSTED_CIDRS (список через запятую), значение по умолчанию — loopback + LAN-подсеть
-// самого dev.uae (172.21.123.0/24) + локальные docker-бриджи этого хоста (172.17-19.0.0/16, см.
-// `ip addr` на dev.uae). Приложение не стоит за реверс-прокси (trust proxy не включён), поэтому
-// используем req.socket.remoteAddress — реальный TCP-адрес, а не заголовки, которые мог бы
-// подделать клиент.
-const DEFAULT_TRUSTED_CIDRS =
-  '127.0.0.1/32,::1/128,172.21.123.0/24,172.17.0.0/16,172.18.0.0/16,172.19.0.0/16';
+/**
+ * Доступ для машинных клиентов (AI-агент и т.п.) — по общему секрету из env AGENT_API_TOKEN,
+ * передаётся как заголовок `X-Api-Key: <token>`, `Authorization: Bearer <token>` либо, для
+ * совсем простых клиентов, query-параметром `?api_key=<token>`.
+ *
+ * ВАЖНО: раньше здесь был обход логина по IP/подсети (loopback + LAN + docker-бриджи).
+ * Это оказалось дырой: сервис стоит за реверс-прокси, поэтому req.socket.remoteAddress для
+ * ЛЮБОГО запроса из интернета — это адрес прокси, который попадал в доверенную подсеть, и
+ * весь сервис открывался без логина (проверено снаружи на calltracer.brightcall.ai:
+ * /call-monitor/calls отдавал данные анониму). По IP машинного клиента здесь отличить нельзя
+ * в принципе — только по секрету, поэтому IP-обход удалён полностью и возвращать его нельзя.
+ */
+function parseBearer(header?: string): string | undefined {
+  if (!header) return undefined;
+  const m = header.match(/^Bearer\s+(.+)$/i);
+  return m ? m[1].trim() : undefined;
+}
+
+function safeEquals(a: string, b: string): boolean {
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 function parseCookies(header?: string): Record<string, string> {
   const out: Record<string, string> = {};
@@ -33,64 +54,37 @@ function parseCookies(header?: string): Record<string, string> {
   return out;
 }
 
-function ipv4ToInt(ip: string): number | null {
-  const m = ip.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (!m) return null;
-  const parts = [m[1], m[2], m[3], m[4]].map(Number);
-  if (parts.some((p) => p < 0 || p > 255)) return null;
-  return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
-}
-
-/** Node отдаёт адреса dual-stack сокетов в виде "::ffff:1.2.3.4" — снимаем IPv6-обёртку. */
-function normalizeIp(ip: string): string {
-  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  return mapped ? mapped[1] : ip;
-}
-
-function isIpInCidr(ip: string, cidr: string): boolean {
-  const normalizedIp = normalizeIp(ip.trim());
-  const [range, prefixStr] = cidr.trim().split('/');
-  if (range.includes(':')) {
-    // IPv6 (например "::1" или "::1/128") — поддерживаем только точное совпадение, префиксную
-    // арифметику не считаем: единственный реальный кейс здесь — IPv6-loopback, а не подсети.
-    return normalizedIp === range;
-  }
-  if (!prefixStr) {
-    // Без маски — точное совпадение
-    return normalizedIp === range;
-  }
-  const ipInt = ipv4ToInt(normalizedIp);
-  const rangeInt = ipv4ToInt(range);
-  if (ipInt === null || rangeInt === null) return false;
-  const prefix = Number(prefixStr);
-  if (!Number.isFinite(prefix) || prefix < 0 || prefix > 32) return false;
-  const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
-  return (ipInt & mask) === (rangeInt & mask);
-}
-
-function parseTrustedCidrs(): string[] {
-  const raw = process.env.AUTH_TRUSTED_CIDRS || DEFAULT_TRUSTED_CIDRS;
-  return raw
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
 @Injectable()
 export class AuthGuard implements CanActivate {
   private readonly logger = new Logger(AuthGuard.name);
-  private readonly trustedCidrs = parseTrustedCidrs();
 
   constructor(private readonly authService: AuthService) {}
 
-  private getClientIp(req: Request): string {
-    return req.socket?.remoteAddress || req.ip || '';
+  /** Токен машинного клиента из запроса: заголовок или query-параметр. */
+  private extractToken(req: Request): string | undefined {
+    const headers = req.headers || {};
+    const apiKeyHeader = headers['x-api-key'];
+    if (typeof apiKeyHeader === 'string' && apiKeyHeader.trim())
+      return apiKeyHeader.trim();
+
+    const bearer = parseBearer(
+      typeof headers.authorization === 'string' ? headers.authorization : '',
+    );
+    if (bearer) return bearer;
+
+    const q = (req.query as Record<string, unknown> | undefined)?.api_key;
+    if (typeof q === 'string' && q.trim()) return q.trim();
+
+    return undefined;
   }
 
-  private isTrustedIp(req: Request): boolean {
-    const ip = this.getClientIp(req);
-    if (!ip) return false;
-    return this.trustedCidrs.some((cidr) => isIpInCidr(ip, cidr));
+  private isValidAgentToken(req: Request): boolean {
+    const expected = String(process.env.AGENT_API_TOKEN ?? '').trim();
+    // Токен не настроен — машинный доступ выключен полностью (никакого обхода по умолчанию)
+    if (!expected) return false;
+    const provided = this.extractToken(req);
+    if (!provided) return false;
+    return safeEquals(provided, expected);
   }
 
   canActivate(context: ExecutionContext): boolean {
@@ -110,15 +104,10 @@ export class AuthGuard implements CanActivate {
       return true;
     }
 
-    if (this.isTrustedIp(req)) {
-      const ip = this.getClientIp(req);
-      this.logger.log('Bypassing login for trusted local IP', {
-        ip,
-        path: req.path,
-      });
+    if (this.isValidAgentToken(req)) {
       (req as Request & { user?: { uid: number; username: string } }).user = {
         uid: 0,
-        username: `local-trusted(${ip})`,
+        username: 'api-token',
       };
       return true;
     }
