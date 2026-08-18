@@ -26,6 +26,20 @@ export class SbctelcoController {
   }
 
   /**
+   * Ручной запуск догоняющего прохода (тот же, что раз в 20 минут по крону): перечитать звонки
+   * за последние ?hours часов (по умолчанию 3) и переписать их в sbctrace. Нужен, чтобы разово
+   * добрать пропущенное за более широкий период и снять записи, застрявшие в состоянии Active.
+   */
+  @Get('reconcile')
+  async reconcile(@Query('hours') hours?: string) {
+    const parsed = Number(hours);
+    const window =
+      Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, 48) : 3;
+    const result = await this.sbctelcoService.reconcileRecentCalls(window);
+    return { hours: window, ...result };
+  }
+
+  /**
    * Поиск звонков в sbctrace по calling (caller), called и/или timestamp.
    * Параметры (все опциональны, можно один или несколько): calling, called, timestamp_after, timestamp_before, limit.
    * timestamp_after / timestamp_before — YYYY-MM-DD или YYYY-MM-DD HH:MM:SS (UTC).
