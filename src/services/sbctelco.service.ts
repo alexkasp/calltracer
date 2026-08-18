@@ -546,101 +546,103 @@ export class SbctelcoService {
       const callData = raw[callId];
       if (!callData || typeof callData !== 'object') continue;
       try {
-      const mos = parseMosFromCallData(callData);
-      const recordId = this.resolveRecordId(callId, callData);
-      const payload: Record<string, unknown> = {
-        ...(meta != null && { '***meta***': meta }),
-        [callId]: callData,
-      };
-      const called = (callData as any)?.called;
-      const calling = (callData as any)?.calling;
-      const legId = (callData as any)?.leg_id;
-      const externalCallId = (callData as any)?.call_id;
-      const state = (callData as any)?.call_state ?? opts?.defaultState ?? null;
-      const terminateReason = (callData as any)?.terminate_reason ?? null;
-      const callTimestamp = this.parseCallTimestamp(callData);
-      const connectTimestamp = this.parseConnectTimestamp(callData);
-      const endTimestampFromTraces = this.getEndTimestampFromCallData(callData);
-      const callDurationRaw = (callData as any)?.call_duration;
-      // В ответах SBCtelco поле call_duration соответствует времени разговора (talk time), а не общей длительности звонка.
-      const talkDurationFromFieldSec =
-        callDurationRaw == null
-          ? null
-          : Number.isFinite(Number(callDurationRaw))
-            ? Math.floor(Number(callDurationRaw))
-            : null;
-      const existing = await this.sbctraceRepo
-        .createQueryBuilder('s')
-        .where('s.id = :id', { id: recordId })
-        .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', {
-          legId: legId != null ? String(legId) : '',
-        })
-        .orWhere(externalCallId != null ? 's.call_id = :callId' : '1=0', {
-          callId: externalCallId != null ? String(externalCallId) : '',
-        })
-        .orderBy('s.created_at', 'DESC')
-        .getOne();
-      const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
-      entity.payload = payload;
-      entity.called = called != null ? String(called) : null;
-      entity.calling = calling != null ? String(calling) : null;
-      entity.legId = legId != null ? String(legId) : null;
-      entity.callId = externalCallId != null ? String(externalCallId) : null;
-      entity.callState =
-        state != null ? String(state) : (entity.callState ?? null);
-      entity.terminateReason =
-        terminateReason != null
-          ? String(terminateReason)
-          : (entity.terminateReason ?? null);
-      entity.callTimestamp = callTimestamp;
-      entity.connectTimestamp = connectTimestamp;
-      entity.lastSeenAt = new Date();
-      entity.endTimestamp =
-        String(entity.callState).toLowerCase() === 'inactive'
-          ? (endTimestampFromTraces ?? entity.endTimestamp ?? new Date())
-          : (entity.endTimestamp ?? null);
-      // Общая длительность звонка: end - start (если обе даты известны)
-      entity.callDurationSec =
-        entity.endTimestamp && entity.callTimestamp
-          ? Math.max(
-              0,
-              Math.floor(
-                (entity.endTimestamp.getTime() -
-                  entity.callTimestamp.getTime()) /
-                  1000,
-              ),
-            )
-          : (entity.callDurationSec ?? null);
-      // Длительность разговора: из call_duration, иначе end - connect
-      entity.talkDurationSec =
-        talkDurationFromFieldSec != null
-          ? talkDurationFromFieldSec
-          : entity.endTimestamp && entity.connectTimestamp
+        const mos = parseMosFromCallData(callData);
+        const recordId = this.resolveRecordId(callId, callData);
+        const payload: Record<string, unknown> = {
+          ...(meta != null && { '***meta***': meta }),
+          [callId]: callData,
+        };
+        const called = (callData as any)?.called;
+        const calling = (callData as any)?.calling;
+        const legId = (callData as any)?.leg_id;
+        const externalCallId = (callData as any)?.call_id;
+        const state =
+          (callData as any)?.call_state ?? opts?.defaultState ?? null;
+        const terminateReason = (callData as any)?.terminate_reason ?? null;
+        const callTimestamp = this.parseCallTimestamp(callData);
+        const connectTimestamp = this.parseConnectTimestamp(callData);
+        const endTimestampFromTraces =
+          this.getEndTimestampFromCallData(callData);
+        const callDurationRaw = (callData as any)?.call_duration;
+        // В ответах SBCtelco поле call_duration соответствует времени разговора (talk time), а не общей длительности звонка.
+        const talkDurationFromFieldSec =
+          callDurationRaw == null
+            ? null
+            : Number.isFinite(Number(callDurationRaw))
+              ? Math.floor(Number(callDurationRaw))
+              : null;
+        const existing = await this.sbctraceRepo
+          .createQueryBuilder('s')
+          .where('s.id = :id', { id: recordId })
+          .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', {
+            legId: legId != null ? String(legId) : '',
+          })
+          .orWhere(externalCallId != null ? 's.call_id = :callId' : '1=0', {
+            callId: externalCallId != null ? String(externalCallId) : '',
+          })
+          .orderBy('s.created_at', 'DESC')
+          .getOne();
+        const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
+        entity.payload = payload;
+        entity.called = called != null ? String(called) : null;
+        entity.calling = calling != null ? String(calling) : null;
+        entity.legId = legId != null ? String(legId) : null;
+        entity.callId = externalCallId != null ? String(externalCallId) : null;
+        entity.callState =
+          state != null ? String(state) : (entity.callState ?? null);
+        entity.terminateReason =
+          terminateReason != null
+            ? String(terminateReason)
+            : (entity.terminateReason ?? null);
+        entity.callTimestamp = callTimestamp;
+        entity.connectTimestamp = connectTimestamp;
+        entity.lastSeenAt = new Date();
+        entity.endTimestamp =
+          String(entity.callState).toLowerCase() === 'inactive'
+            ? (endTimestampFromTraces ?? entity.endTimestamp ?? new Date())
+            : (entity.endTimestamp ?? null);
+        // Общая длительность звонка: end - start (если обе даты известны)
+        entity.callDurationSec =
+          entity.endTimestamp && entity.callTimestamp
             ? Math.max(
                 0,
                 Math.floor(
                   (entity.endTimestamp.getTime() -
-                    entity.connectTimestamp.getTime()) /
+                    entity.callTimestamp.getTime()) /
                     1000,
                 ),
               )
-            : (entity.talkDurationSec ?? null);
-      entity.mos = mos;
-      saved.push(await this.saveTraceEntity(entity));
-      if (
-        mos != null &&
-        mos < this.MOS_ALERT_THRESHOLD &&
-        (!existing ||
-          existing.mos == null ||
-          existing.mos >= this.MOS_ALERT_THRESHOLD)
-      ) {
-        lowMosEntries.push({
-          id: entity.id,
-          calling: calling != null ? String(calling) : null,
-          called: called != null ? String(called) : null,
-          mos,
-        });
-      }
+            : (entity.callDurationSec ?? null);
+        // Длительность разговора: из call_duration, иначе end - connect
+        entity.talkDurationSec =
+          talkDurationFromFieldSec != null
+            ? talkDurationFromFieldSec
+            : entity.endTimestamp && entity.connectTimestamp
+              ? Math.max(
+                  0,
+                  Math.floor(
+                    (entity.endTimestamp.getTime() -
+                      entity.connectTimestamp.getTime()) /
+                      1000,
+                  ),
+                )
+              : (entity.talkDurationSec ?? null);
+        entity.mos = mos;
+        saved.push(await this.saveTraceEntity(entity));
+        if (
+          mos != null &&
+          mos < this.MOS_ALERT_THRESHOLD &&
+          (!existing ||
+            existing.mos == null ||
+            existing.mos >= this.MOS_ALERT_THRESHOLD)
+        ) {
+          lowMosEntries.push({
+            id: entity.id,
+            calling: calling != null ? String(calling) : null,
+            called: called != null ? String(called) : null,
+            mos,
+          });
+        }
       } catch (e: any) {
         // Раньше try/catch здесь не было: одна упавшая запись роняла весь метод, крон ловил
         // ошибку и молча терял ВСЮ оставшуюся пачку звонков (в логах — сотни "ошибка при

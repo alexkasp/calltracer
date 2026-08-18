@@ -18,12 +18,18 @@ export class SbctelcoCronService {
     const enabled = this.configService.get<string>('SBC_CRON_FETCH_ENABLED');
     if (enabled === 'false' || enabled === '0') return;
     try {
-      const { saved, ids } = await this.sbctelcoService.fetchAndUpsertActiveSnapshot();
+      const { saved, ids } =
+        await this.sbctelcoService.fetchAndUpsertActiveSnapshot();
       if (saved > 0) {
-        this.logger.log(`Sbctelco cron (Active): обновлено/добавлено ${saved} звонков`, { ids });
+        this.logger.log(
+          `Sbctelco cron (Active): обновлено/добавлено ${saved} звонков`,
+          { ids },
+        );
       }
     } catch (err: any) {
-      this.logger.warn('Sbctelco cron (Active): ошибка при загрузке звонков', { message: err?.message });
+      this.logger.warn('Sbctelco cron (Active): ошибка при загрузке звонков', {
+        message: err?.message,
+      });
     }
   }
 
@@ -33,12 +39,19 @@ export class SbctelcoCronService {
     const enabled = this.configService.get<string>('SBC_CRON_FETCH_ENABLED');
     if (enabled === 'false' || enabled === '0') return;
     try {
-      const { added, ids } = await this.sbctelcoService.fetchAndSaveInactiveWithOverlap();
+      const { added, ids } =
+        await this.sbctelcoService.fetchAndSaveInactiveWithOverlap();
       if (added > 0) {
-        this.logger.log(`Sbctelco cron (Inactive overlap): добавлено ${added} звонков`, { ids });
+        this.logger.log(
+          `Sbctelco cron (Inactive overlap): добавлено ${added} звонков`,
+          { ids },
+        );
       }
     } catch (err: any) {
-      this.logger.warn('Sbctelco cron (Inactive overlap): ошибка при загрузке звонков', { message: err?.message });
+      this.logger.warn(
+        'Sbctelco cron (Inactive overlap): ошибка при загрузке звонков',
+        { message: err?.message },
+      );
     }
   }
 
@@ -71,10 +84,14 @@ export class SbctelcoCronService {
     try {
       const deleted = await this.sbctelcoService.deleteOlderThanFiveDays();
       if (deleted > 0) {
-        this.logger.log(`Sbctelco cron: удалено ${deleted} записей старше 5 дней из sbctrace`);
+        this.logger.log(
+          `Sbctelco cron: удалено ${deleted} записей старше 5 дней из sbctrace`,
+        );
       }
     } catch (err: any) {
-      this.logger.warn('Sbctelco cron: ошибка при удалении старых звонков', { message: err?.message });
+      this.logger.warn('Sbctelco cron: ошибка при удалении старых звонков', {
+        message: err?.message,
+      });
     }
   }
 }
