@@ -352,13 +352,21 @@ export class SbctelcoService {
     const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
     if (callKeys.length === 0) return { added: 0, ids: [] };
     const cutoff = new Date(Date.now() - ID_DEDUP_WINDOW_MS);
+    // Ключи ответа SBC — сырые leg_id ("0x0A..."), а в БД id хранится с префиксом ("leg:0x0A...",
+    // см. resolveRecordId). Раньше сравнивали сырые ключи с s.id напрямую, поэтому совпадений не
+    // было никогда и дедуп вырождался в no-op: каждый проход перезаписывал все звонки заново.
+    // Пропускаем только уже финализированные (Inactive) записи: звонок, сохранённый Active-снапшотом,
+    // обязан пройти через этот проход ещё раз, иначе он навсегда останется в состоянии Active.
     const recentlySaved = await this.sbctraceRepo
       .createQueryBuilder('s')
       .select('s.id', 'id')
-      .where('s.id IN (:...ids)', { ids: callKeys })
+      .where('s.id IN (:...ids)', { ids: callKeys.map((k) => `leg:${k}`) })
       .andWhere('s.created_at >= :cutoff', { cutoff })
+      .andWhere('s.call_state = :st', { st: 'Inactive' })
       .getRawMany<{ id: string }>();
-    const recentSet = new Set(recentlySaved.map((r) => r.id));
+    const recentSet = new Set(
+      recentlySaved.map((r) => String(r.id).replace(/^leg:/, '')),
+    );
     const newIds = callKeys.filter((id) => !recentSet.has(id));
     if (newIds.length === 0) return { added: 0, ids: [] };
     const rawFiltered: Record<string, unknown> = {
@@ -379,7 +387,25 @@ export class SbctelcoService {
     const merged: Record<string, unknown> = {};
     let page = 1;
     while (true) {
-      const raw = await this.getCallTrace({ ...baseParams, page });
+      // API SBC периодически отваливается по таймауту (в логах ETIMEDOUT 172.24.121.150:12358).
+      // Раньше ошибка любой страницы пробрасывалась наверх и весь проход крона терялся вместе с
+      // уже вычитанными страницами — повторяем попытку, а при неудаче отдаём то, что успели
+      // собрать, чтобы сохранить хотя бы часть звонков.
+      let raw: Record<string, unknown>;
+      try {
+        raw = await this.getCallTrace({ ...baseParams, page });
+      } catch (e: any) {
+        try {
+          await new Promise((r) => setTimeout(r, 2000));
+          raw = await this.getCallTrace({ ...baseParams, page });
+        } catch (e2: any) {
+          this.logger.warn(
+            'SBCtelco: страница call_trace не получена, продолжаем с уже собранными данными',
+            { page, message: e2?.message },
+          );
+          break;
+        }
+      }
       if (page === 1 && raw?.['***meta***'] != null)
         merged['***meta***'] = raw['***meta***'];
       const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
@@ -389,6 +415,48 @@ export class SbctelcoService {
       if (page > 100) break;
     }
     return merged;
+  }
+
+  /**
+   * Догоняющий проход (reconcile). Закрывает два провала обычных кронов:
+   *  1) записи, застрявшие в состоянии Active — звонок давно кончился, но финальные данные
+   *     (состояние, длительность, MOS, terminate_reason) так и не подтянулись;
+   *  2) звонки, полностью потерянные из-за оборванной пачки или таймаута API.
+   * Перебирает звонки за широкое окно (по умолчанию 3 часа) и переписывает их поверх текущих.
+   */
+  async reconcileRecentCalls(
+    hours = 3,
+  ): Promise<{ scanned: number; saved: number; stuckActiveFixed: number }> {
+    const now = new Date();
+    const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
+    const raw = await this.getCallTraceAllPages({
+      nb_result: this.fetchLimit,
+      recursive: 'yes',
+      start: this.formatStartParamUtc4(from),
+      end: this.formatStartParamUtc4(now),
+      call_state: 'Inactive',
+    });
+    const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
+    if (callKeys.length === 0)
+      return { scanned: 0, saved: 0, stuckActiveFixed: 0 };
+
+    const stuckBefore = await this.sbctraceRepo
+      .createQueryBuilder('s')
+      .where('s.id IN (:...ids)', { ids: callKeys.map((k) => `leg:${k}`) })
+      .andWhere('s.call_state = :st', { st: 'Active' })
+      .getCount();
+
+    const { saved } = await this.saveTracesFromResponse(raw, {
+      defaultState: 'Inactive',
+      // алерты по MOS уже разосланы обычными проходами — повторно не шумим
+      notifyLowMos: false,
+    });
+
+    return {
+      scanned: callKeys.length,
+      saved,
+      stuckActiveFixed: stuckBefore,
+    };
   }
 
   /**
@@ -426,6 +494,31 @@ export class SbctelcoService {
     return base.slice(0, 64);
   }
 
+  /**
+   * Сохранить запись, пережив гонку между кронами. Active-снапшот (раз в минуту) и Inactive-проход
+   * (раз в 5 минут) обрабатывают пересекающиеся наборы звонков одновременно: между SELECT existing
+   * и INSERT соседний проход успевает вставить ту же строку, и MySQL отдаёт
+   * "Duplicate entry 'leg:0x...' for key 'sbctrace.PRIMARY'". В этом случае перечитываем строку и
+   * применяем изменения как UPDATE.
+   */
+  private async saveTraceEntity(entity: Sbctrace): Promise<Sbctrace> {
+    try {
+      return await this.sbctraceRepo.save(entity);
+    } catch (e: any) {
+      const isDuplicate =
+        e?.code === 'ER_DUP_ENTRY' ||
+        e?.errno === 1062 ||
+        /duplicate entry/i.test(String(e?.message ?? ''));
+      if (!isDuplicate) throw e;
+      const fresh = await this.sbctraceRepo.findOne({
+        where: { id: entity.id },
+      });
+      if (!fresh) throw e;
+      Object.assign(fresh, entity);
+      return await this.sbctraceRepo.save(fresh);
+    }
+  }
+
   async saveTracesFromResponse(
     raw: Record<string, unknown>,
     opts?: { defaultState?: 'Active' | 'Inactive'; notifyLowMos?: boolean },
@@ -448,9 +541,11 @@ export class SbctelcoService {
       called: string | null;
       mos: number;
     }> = [];
+    let failed = 0;
     for (const callId of callKeys) {
       const callData = raw[callId];
       if (!callData || typeof callData !== 'object') continue;
+      try {
       const mos = parseMosFromCallData(callData);
       const recordId = this.resolveRecordId(callId, callData);
       const payload: Record<string, unknown> = {
@@ -531,7 +626,7 @@ export class SbctelcoService {
               )
             : (entity.talkDurationSec ?? null);
       entity.mos = mos;
-      saved.push(await this.sbctraceRepo.save(entity));
+      saved.push(await this.saveTraceEntity(entity));
       if (
         mos != null &&
         mos < this.MOS_ALERT_THRESHOLD &&
@@ -546,6 +641,21 @@ export class SbctelcoService {
           mos,
         });
       }
+      } catch (e: any) {
+        // Раньше try/catch здесь не было: одна упавшая запись роняла весь метод, крон ловил
+        // ошибку и молча терял ВСЮ оставшуюся пачку звонков (в логах — сотни "ошибка при
+        // загрузке звонков" и Duplicate entry 'leg:0x...'). Изолируем каждую запись.
+        failed += 1;
+        this.logger.warn('Sbctrace: не удалось сохранить звонок, пропускаем', {
+          callId,
+          message: e?.message,
+        });
+      }
+    }
+    if (failed > 0) {
+      this.logger.warn(
+        `Sbctrace: пропущено ${failed} из ${callKeys.length} звонков при сохранении`,
+      );
     }
     const shouldNotify = opts?.notifyLowMos !== false;
     if (shouldNotify && lowMosEntries.length > 0) {

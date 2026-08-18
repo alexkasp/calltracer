@@ -42,6 +42,29 @@ export class SbctelcoCronService {
     }
   }
 
+  /**
+   * Каждые 20 минут: догоняющий проход за последние 3 часа — забирает звонки, потерянные
+   * из-за таймаутов API/оборванных пачек, и финализирует записи, застрявшие в Active.
+   */
+  @Cron('*/20 * * * *')
+  async handleReconcile() {
+    const enabled = this.configService.get<string>('SBC_CRON_FETCH_ENABLED');
+    if (enabled === 'false' || enabled === '0') return;
+    try {
+      const { scanned, saved, stuckActiveFixed } =
+        await this.sbctelcoService.reconcileRecentCalls(3);
+      if (saved > 0) {
+        this.logger.log(
+          `Sbctelco cron (Reconcile): просмотрено ${scanned}, сохранено/обновлено ${saved}, снято с зависшего Active ${stuckActiveFixed}`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn('Sbctelco cron (Reconcile): ошибка', {
+        message: err?.message,
+      });
+    }
+  }
+
   /** Раз в сутки (3:00): удалить из sbctrace звонки старше 5 дней */
   @Cron('0 3 * * *')
   async handleDeleteOlderThanFiveDays() {
