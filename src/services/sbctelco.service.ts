@@ -424,39 +424,62 @@ export class SbctelcoService {
    *  2) звонки, полностью потерянные из-за оборванной пачки или таймаута API.
    * Перебирает звонки за широкое окно (по умолчанию 3 часа) и переписывает их поверх текущих.
    */
-  async reconcileRecentCalls(
-    hours = 3,
-  ): Promise<{ scanned: number; saved: number; stuckActiveFixed: number }> {
-    const now = new Date();
-    const from = new Date(now.getTime() - hours * 60 * 60 * 1000);
-    const raw = await this.getCallTraceAllPages({
-      nb_result: this.fetchLimit,
-      recursive: 'yes',
-      start: this.formatStartParamUtc4(from),
-      end: this.formatStartParamUtc4(now),
-      call_state: 'Inactive',
-    });
-    const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
-    if (callKeys.length === 0)
-      return { scanned: 0, saved: 0, stuckActiveFixed: 0 };
+  async reconcileRecentCalls(hours = 3): Promise<{
+    scanned: number;
+    saved: number;
+    stuckActiveFixed: number;
+    slicesFailed: number;
+  }> {
+    // Окно режем на короткие куски: полный трейс тяжёлый (6 часов — это ~10 МБ и ~124 с ответа, дольше
+    // HTTP-таймаута клиента, из-за чего проход возвращал пустоту), а 15 минут отдаются за ~8 с.
+    // Заодно упираемся в nb_result=1000 на срез, чего для 15 минут с запасом хватает.
+    const sliceMinutes = 15;
+    const now = Date.now();
+    const from = now - hours * 60 * 60 * 1000;
 
-    const stuckBefore = await this.sbctraceRepo
-      .createQueryBuilder('s')
-      .where('s.id IN (:...ids)', { ids: callKeys.map((k) => `leg:${k}`) })
-      .andWhere('s.call_state = :st', { st: 'Active' })
-      .getCount();
+    let scanned = 0;
+    let saved = 0;
+    let stuckActiveFixed = 0;
+    let slicesFailed = 0;
 
-    const { saved } = await this.saveTracesFromResponse(raw, {
-      defaultState: 'Inactive',
-      // алерты по MOS уже разосланы обычными проходами — повторно не шумим
-      notifyLowMos: false,
-    });
+    for (let t = from; t < now; t += sliceMinutes * 60 * 1000) {
+      const sliceStart = new Date(t);
+      const sliceEnd = new Date(Math.min(t + sliceMinutes * 60 * 1000, now));
+      try {
+        const raw = await this.getCallTraceAllPages({
+          nb_result: this.fetchLimit,
+          recursive: 'yes',
+          start: this.formatStartParamUtc4(sliceStart),
+          end: this.formatStartParamUtc4(sliceEnd),
+          call_state: 'Inactive',
+        });
+        const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
+        if (callKeys.length === 0) continue;
 
-    return {
-      scanned: callKeys.length,
-      saved,
-      stuckActiveFixed: stuckBefore,
-    };
+        stuckActiveFixed += await this.sbctraceRepo
+          .createQueryBuilder('s')
+          .where('s.id IN (:...ids)', { ids: callKeys.map((k) => `leg:${k}`) })
+          .andWhere('s.call_state = :st', { st: 'Active' })
+          .getCount();
+
+        const res = await this.saveTracesFromResponse(raw, {
+          defaultState: 'Inactive',
+          // алерты по MOS уже разосланы обычными проходами — повторно не шумим
+          notifyLowMos: false,
+        });
+        scanned += callKeys.length;
+        saved += res.saved;
+      } catch (e: any) {
+        slicesFailed += 1;
+        this.logger.warn('Sbctrace reconcile: срез не обработан', {
+          start: sliceStart.toISOString(),
+          end: sliceEnd.toISOString(),
+          message: e?.message,
+        });
+      }
+    }
+
+    return { scanned, saved, stuckActiveFixed, slicesFailed };
   }
 
   /**
