@@ -31,7 +31,21 @@ export class Sbctrace {
   @Column({ type: 'varchar', length: 32, nullable: true, name: 'call_state' })
   callState: string | null;
 
-  @Column({ type: 'varchar', length: 64, nullable: true, name: 'terminate_reason' })
+  /**
+   * Звонок без маршрута/несостоявшийся: SBC отдаёт такую запись без SIP call_id, без номеров
+   * (calling/called) и без NAP, с нулевой длительностью, и навсегда оставляет её в состоянии
+   * Active. Раньше такие звонки вообще не доезжали до БД, поэтому помечаем их явно — по этому
+   * флагу их сразу видно (SELECT ... WHERE no_route = 1).
+   */
+  @Column({ type: 'boolean', default: false, name: 'no_route' })
+  noRoute: boolean;
+
+  @Column({
+    type: 'varchar',
+    length: 64,
+    nullable: true,
+    name: 'terminate_reason',
+  })
   terminateReason: string | null;
 
   /** Время звонка из поля timestamp ответа SBCtelco */

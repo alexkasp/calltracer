@@ -594,23 +594,52 @@ export class SbctelcoService {
             : Number.isFinite(Number(callDurationRaw))
               ? Math.floor(Number(callDurationRaw))
               : null;
+        // Пустая строка — это ОТСУТСТВИЕ идентификатора, а не значение для сопоставления.
+        // Раньше проверялось только `!= null`, поэтому у звонков без маршрута (SBC отдаёт их с
+        // call_id='' и пустыми calling/called/nap) условие вырождалось в `s.call_id = ''` и
+        // цеплялo первую попавшуюся такую строку: звонок не вставлялся, а ЗАТИРАЛ чужую запись.
+        // Все такие звонки схлопывались в несколько строк, у которых id и leg_id уже не совпадали
+        // (например id=leg:0x8AE33C7F при leg_id=0x8B322B14) — именно они и «пропадали» из calltrace.
+        const legIdStr =
+          legId != null && String(legId).trim() !== '' ? String(legId) : null;
+        const externalCallIdStr =
+          externalCallId != null && String(externalCallId).trim() !== ''
+            ? String(externalCallId)
+            : null;
         const existing = await this.sbctraceRepo
           .createQueryBuilder('s')
           .where('s.id = :id', { id: recordId })
-          .orWhere(legId != null ? 's.leg_id = :legId' : '1=0', {
-            legId: legId != null ? String(legId) : '',
+          .orWhere(legIdStr !== null ? 's.leg_id = :legId' : '1=0', {
+            legId: legIdStr ?? '',
           })
-          .orWhere(externalCallId != null ? 's.call_id = :callId' : '1=0', {
-            callId: externalCallId != null ? String(externalCallId) : '',
+          .orWhere(externalCallIdStr !== null ? 's.call_id = :callId' : '1=0', {
+            callId: externalCallIdStr ?? '',
           })
           .orderBy('s.created_at', 'DESC')
           .getOne();
-        const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
+        // Переиспользуем найденную запись только если это действительно та же запись. Совпадение
+        // по leg_id/call_id при другом id означало бы, что мы присваиваем чужой строке новую
+        // идентичность — именно так и появились строки с рассогласованными id и leg_id.
+        const entity =
+          existing && existing.id === recordId
+            ? existing
+            : this.sbctraceRepo.create({ id: recordId });
         entity.payload = payload;
         entity.called = called != null ? String(called) : null;
         entity.calling = calling != null ? String(calling) : null;
-        entity.legId = legId != null ? String(legId) : null;
-        entity.callId = externalCallId != null ? String(externalCallId) : null;
+        // Пустые идентификаторы храним как NULL, иначе строки с call_id='' снова начнут
+        // притягивать к себе любые звонки без маршрута.
+        entity.legId = legIdStr;
+        entity.callId = externalCallIdStr;
+        // Признак несостоявшегося звонка (см. Sbctrace.noRoute): у SBC нет ни SIP call_id, ни
+        // номеров — сигнализация фактически не состоялась. Такие записи помечаем, чтобы их было
+        // видно сразу, а не искать глазами среди обычных.
+        const isEmpty = (v: unknown) => v == null || String(v).trim() === '';
+        entity.noRoute =
+          externalCallIdStr === null &&
+          isEmpty(calling) &&
+          isEmpty(called) &&
+          isEmpty((callData as any)?.nap);
         entity.callState =
           state != null ? String(state) : (entity.callState ?? null);
         entity.terminateReason =
