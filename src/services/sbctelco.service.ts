@@ -6,6 +6,7 @@ import { firstValueFrom } from 'rxjs';
 import { Sbctrace } from '../entities/sbctrace.entity';
 import { TelegramNotifyService } from './telegram-notify.service';
 import { parseMosFromCallData } from '../utils/sbc-mos';
+import { parseRoutingDecision } from '../utils/sbc-routing';
 
 type SbctelcoCallTraceParams = {
   nb_result?: number;
@@ -624,22 +625,22 @@ export class SbctelcoService {
           existing && existing.id === recordId
             ? existing
             : this.sbctraceRepo.create({ id: recordId });
+        // Решение о маршрутизации из трейса: даёт достоверный признак «маршрут не найден» и
+        // содержит номера даже у записей, у которых верхнеуровневые calling/called ещё пустые.
+        const routing = parseRoutingDecision(callData);
         entity.payload = payload;
-        entity.called = called != null ? String(called) : null;
-        entity.calling = calling != null ? String(calling) : null;
+        const nonEmpty = (v: unknown): string | null =>
+          v != null && String(v).trim() !== '' ? String(v) : null;
+        entity.called = nonEmpty(called) ?? routing?.called ?? null;
+        entity.calling = nonEmpty(calling) ?? routing?.calling ?? null;
         // Пустые идентификаторы храним как NULL, иначе строки с call_id='' снова начнут
         // притягивать к себе любые звонки без маршрута.
         entity.legId = legIdStr;
         entity.callId = externalCallIdStr;
-        // Признак несостоявшегося звонка (см. Sbctrace.noRoute): у SBC нет ни SIP call_id, ни
-        // номеров — сигнализация фактически не состоялась. Такие записи помечаем, чтобы их было
-        // видно сразу, а не искать глазами среди обычных.
-        const isEmpty = (v: unknown) => v == null || String(v).trim() === '';
-        entity.noRoute =
-          externalCallIdStr === null &&
-          isEmpty(calling) &&
-          isEmpty(called) &&
-          isEmpty((callData as any)?.nap);
+        // Маршрут не найден — ТОЛЬКО если так сказал сам SBC ("found 0 matching route").
+        // По пустым полям это определять нельзя: у звонков, застрявших в начале исходящего плеча,
+        // поля тоже пустые, но маршрут им как раз нашёлся (проверено на живых данных).
+        entity.noRoute = routing != null && routing.matchedRoutes === 0;
         entity.callState =
           state != null ? String(state) : (entity.callState ?? null);
         entity.terminateReason =
