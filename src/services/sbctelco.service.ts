@@ -146,8 +146,11 @@ export class SbctelcoService {
           where: { id: recordId },
         });
         const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
+        // calldate у VoIPmonitor — локальное время ОАЭ без указания зоны ("2026-08-20 08:40:20").
+        // Смещение задаём явно: иначе Date разберёт строку в таймзоне процесса, и при запуске
+        // сервиса в UTC время уехало бы на 4 часа относительно записей, пришедших из SBC.
         const calldate = cdr.calldate
-          ? new Date(String(cdr.calldate).replace(' ', 'T'))
+          ? new Date(`${String(cdr.calldate).replace(' ', 'T')}+04:00`)
           : null;
         entity.payload = { '***voipmonitor-cdr***': cdr };
         entity.callId = callId;
