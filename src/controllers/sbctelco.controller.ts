@@ -40,6 +40,23 @@ export class SbctelcoController {
   }
 
   /**
+   * Ручной запуск импорта звонков без маршрута из VoIPmonitor (тот же, что раз в 5 минут по
+   * крону), за произвольное окно ?minutes (по умолчанию 30, максимум 7 суток). Нужен, чтобы
+   * разово добрать такие звонки за прошедшие дни — SBC их не отдаёт вообще.
+   */
+  @Get('no-route-import')
+  async noRouteImport(@Query('minutes') minutes?: string) {
+    const parsed = Number(minutes);
+    const window =
+      Number.isFinite(parsed) && parsed > 0
+        ? Math.min(parsed, 7 * 24 * 60)
+        : 30;
+    const result =
+      await this.sbctelcoService.importNoRouteCallsFromVoipmonitor(window);
+    return { minutes: window, ...result };
+  }
+
+  /**
    * Поиск звонков в sbctrace по calling (caller), called и/или timestamp.
    * Параметры (все опциональны, можно один или несколько): calling, called, timestamp_after, timestamp_before, limit.
    * timestamp_after / timestamp_before — YYYY-MM-DD или YYYY-MM-DD HH:MM:SS (UTC).
