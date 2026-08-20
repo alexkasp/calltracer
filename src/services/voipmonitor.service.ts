@@ -1,4 +1,11 @@
-import { Injectable, Logger, HttpException, HttpStatus, Inject, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  HttpException,
+  HttpStatus,
+  Inject,
+  BadRequestException,
+} from '@nestjs/common';
 import { HttpService } from '@nestjs/axios';
 import Redis from 'ioredis';
 import { firstValueFrom } from 'rxjs';
@@ -98,7 +105,9 @@ export class VoipmonitorService {
 
     return {
       success: raw?.success ?? true,
-      total: raw?.total ?? (typeof raw?.total === 'string' ? raw.total : String(results.length)),
+      total:
+        raw?.total ??
+        (typeof raw?.total === 'string' ? raw.total : String(results.length)),
       deferTotal: raw?.deferTotal ?? false,
       vmVersion: raw?._vm_version,
       results: results.map((r) => this.pickDiagnosticFields(r)),
@@ -147,13 +156,18 @@ export class VoipmonitorService {
     }
 
     // Baseline direction: use the first element's srcip/dstip (or first that has them)
-    const firstWithIps = results[0]?.srcip && results[0]?.dstip ? results[0] : results.find((r) => r?.srcip && r?.dstip);
+    const firstWithIps =
+      results[0]?.srcip && results[0]?.dstip
+        ? results[0]
+        : results.find((r) => r?.srcip && r?.dstip);
     const baseSrcip = firstWithIps?.srcip ? String(firstWithIps.srcip) : '';
     const baseDstip = firstWithIps?.dstip ? String(firstWithIps.dstip) : '';
 
     const lines: string[] = [];
     if (baseSrcip || baseDstip) {
-      lines.push(`srcip: ${baseSrcip || 'N/A'} -> dstip: ${baseDstip || 'N/A'}`);
+      lines.push(
+        `srcip: ${baseSrcip || 'N/A'} -> dstip: ${baseDstip || 'N/A'}`,
+      );
       lines.push('');
     }
 
@@ -192,9 +206,12 @@ export class VoipmonitorService {
     // чтобы поведение было идентично ручному curl.
     const forced = process.env.VOIPMONITOR_PHPSESSID;
     if (forced) {
-      this.logger.warn('Using VOIPMONITOR_PHPSESSID from env (forced session)', {
-        sessionIdPrefix: `${forced.slice(0, 6)}...`,
-      });
+      this.logger.warn(
+        'Using VOIPMONITOR_PHPSESSID from env (forced session)',
+        {
+          sessionIdPrefix: `${forced.slice(0, 6)}...`,
+        },
+      );
       return String(forced);
     }
 
@@ -208,12 +225,19 @@ export class VoipmonitorService {
       });
       // Убеждаемся, что это строка
       const sessionIdStr = String(cachedSessionId);
-      if (sessionIdStr === '[object Object]' || sessionIdStr === '' || sessionIdStr.length < 10) {
-        this.logger.warn('Invalid sessionId in Redis cache, clearing and re-login', {
-          cachedSessionId,
-          sessionIdStr,
-          type: typeof cachedSessionId,
-        });
+      if (
+        sessionIdStr === '[object Object]' ||
+        sessionIdStr === '' ||
+        sessionIdStr.length < 10
+      ) {
+        this.logger.warn(
+          'Invalid sessionId in Redis cache, clearing and re-login',
+          {
+            cachedSessionId,
+            sessionIdStr,
+            type: typeof cachedSessionId,
+          },
+        );
         await this.redis.del(this.sessionKey);
         return this.login();
       }
@@ -226,7 +250,9 @@ export class VoipmonitorService {
 
   async getSipHistoryBriefDataById(id: string | number): Promise<string> {
     if (id === undefined || id === null || String(id).trim() === '') {
-      throw new BadRequestException('VoIPmonitor call id is required for SIP history');
+      throw new BadRequestException(
+        'VoIPmonitor call id is required for SIP history',
+      );
     }
 
     let sessionId = await this.getSessionId();
@@ -275,26 +301,31 @@ export class VoipmonitorService {
 
       return body;
     } catch (error) {
-      this.logger.error('Error fetching SIP history from VoIPmonitor (brief_data)', {
-        url,
-        curlCommand,
-        sessionId: sessionIdStr,
-        id: String(id),
-        error: {
-          message: error.message,
-          code: error.code,
-          response: {
-            status: error.response?.status,
-            statusText: error.response?.statusText,
-            data: error.response?.data,
-            headers: error.response?.headers,
+      this.logger.error(
+        'Error fetching SIP history from VoIPmonitor (brief_data)',
+        {
+          url,
+          curlCommand,
+          sessionId: sessionIdStr,
+          id: String(id),
+          error: {
+            message: error.message,
+            code: error.code,
+            response: {
+              status: error.response?.status,
+              statusText: error.response?.statusText,
+              data: error.response?.data,
+              headers: error.response?.headers,
+            },
           },
         },
-      });
+      );
 
       // If auth error, clear cached session
       if (error.response?.status === 401 || error.response?.status === 403) {
-        this.logger.warn('Session expired while fetching SIP history, clearing cache');
+        this.logger.warn(
+          'Session expired while fetching SIP history, clearing cache',
+        );
         await this.redis.del(this.sessionKey);
       }
 
@@ -317,12 +348,16 @@ export class VoipmonitorService {
       });
 
       const response = await firstValueFrom(
-        this.httpService.post(url, {}, {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Accept: 'application/json',
+        this.httpService.post(
+          url,
+          {},
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
+              Accept: 'application/json',
+            },
           },
-        }),
+        ),
       );
 
       // Извлекаем sessionId из ответа - может быть в поле sessionId или сам response.data
@@ -337,7 +372,7 @@ export class VoipmonitorService {
       }
 
       if (!sessionId || sessionId === '[object Object]' || sessionId === '') {
-        this.logger.error('No valid sessionId in response', { 
+        this.logger.error('No valid sessionId in response', {
           responseData: response.data,
           responseDataType: typeof response.data,
         });
@@ -349,7 +384,9 @@ export class VoipmonitorService {
 
       // Сохраняем sessionId в Redis
       await this.redis.setex(this.sessionKey, this.sessionTtl, sessionId);
-      this.logger.log('Successfully logged in and cached sessionId', { sessionId });
+      this.logger.log('Successfully logged in and cached sessionId', {
+        sessionId,
+      });
 
       return sessionId;
     } catch (error) {
@@ -373,19 +410,26 @@ export class VoipmonitorService {
     }
   }
 
-  async getCalls(params: {
-    limit?: number;
-    start?: number;
-    fdatefrom?: string;
-    fdateto?: string;
-    fcaller?: string;
-    fcalled?: string;
-    fcallerd_type?: number;
-    fcallid?: string;
-    fbasename?: string;
-    fdurationgt?: number;
-    fdurationlt?: number;
-  } = {}): Promise<any> {
+  async getCalls(
+    params: {
+      limit?: number;
+      start?: number;
+      fdatefrom?: string;
+      fdateto?: string;
+      fcaller?: string;
+      fcalled?: string;
+      fcallerd_type?: number;
+      fcallid?: string;
+      fbasename?: string;
+      fdurationgt?: number;
+      fdurationlt?: number;
+      /**
+       * Фильтр по последнему SIP-ответу, например '404'. Именно `fsipresponse` — проверено на API:
+       * варианты flastsipresponse/fsipresponsenum/fresponse молча игнорируются и отдают всё подряд.
+       */
+      fsipresponse?: string;
+    } = {},
+  ): Promise<any> {
     const {
       limit = 10,
       start = 0,
@@ -398,20 +442,23 @@ export class VoipmonitorService {
       fbasename,
       fdurationgt,
       fdurationlt,
+      fsipresponse,
     } = params;
 
     // VoIPmonitor API требует fdatefrom, иначе возвращает ошибку
     if (!fdatefrom) {
-      throw new BadRequestException('fdatefrom is required for VoIPmonitor CDR LISTING');
+      throw new BadRequestException(
+        'fdatefrom is required for VoIPmonitor CDR LISTING',
+      );
     }
 
     let sessionId = await this.getSessionId();
-    
+
     // Убеждаемся, что sessionId - строка (на случай если getSessionId вернул что-то другое)
     if (typeof sessionId !== 'string') {
-      this.logger.warn('sessionId is not a string, converting', { 
-        sessionId, 
-        type: typeof sessionId 
+      this.logger.warn('sessionId is not a string, converting', {
+        sessionId,
+        type: typeof sessionId,
       });
       sessionId = String(sessionId || '');
     }
@@ -447,6 +494,9 @@ export class VoipmonitorService {
     }
     if (fdurationlt !== undefined) {
       queryParams.append('fdurationlt', fdurationlt.toString());
+    }
+    if (fsipresponse) {
+      queryParams.append('fsipresponse', fsipresponse);
     }
 
     const url = `${this.voipmonitorUrl}/php/model/sql.php?${queryParams.toString()}`;
@@ -497,7 +547,10 @@ export class VoipmonitorService {
           sessionId: sessionIdStr,
           snippet,
         });
-        throw new HttpException('VoIPmonitor returned non-JSON response', HttpStatus.BAD_GATEWAY);
+        throw new HttpException(
+          'VoIPmonitor returned non-JSON response',
+          HttpStatus.BAD_GATEWAY,
+        );
       }
 
       const formatted = this.formatCallsResponse(response.data);
@@ -546,7 +599,8 @@ export class VoipmonitorService {
       }
 
       throw new HttpException(
-        error.response?.data?.message || 'Failed to fetch calls from VoIPmonitor',
+        error.response?.data?.message ||
+          'Failed to fetch calls from VoIPmonitor',
         error.response?.status || HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
@@ -570,10 +624,15 @@ export class VoipmonitorService {
     return first;
   }
 
-  async findCallBySipCallIdWithDate(sipCallId: string, fdatefrom: string): Promise<any | null> {
+  async findCallBySipCallIdWithDate(
+    sipCallId: string,
+    fdatefrom: string,
+  ): Promise<any | null> {
     if (!sipCallId) return null;
     if (!fdatefrom) {
-      throw new BadRequestException('fdatefrom is required to find VoIPmonitor call by sipCallId');
+      throw new BadRequestException(
+        'fdatefrom is required to find VoIPmonitor call by sipCallId',
+      );
     }
 
     const response = await this.getCalls({
@@ -613,7 +672,9 @@ export class VoipmonitorService {
         }),
       );
 
-      const contentType = String(response.headers?.['content-type'] || 'application/octet-stream');
+      const contentType = String(
+        response.headers?.['content-type'] || 'application/octet-stream',
+      );
       const buffer = Buffer.from(response.data as ArrayBuffer);
 
       // При ошибке (например нет прав can_pcap/can_download_audio, файл уже удалён по ретеншену)
@@ -626,8 +687,15 @@ export class VoipmonitorService {
         } catch {
           // не JSON — оставляем как есть
         }
-        this.logger.warn('VoIPmonitor api.php returned non-binary response', { task, params, message: message.slice(0, 500) });
-        throw new HttpException(`VoIPmonitor API error (${task}): ${message.slice(0, 500)}`, HttpStatus.BAD_GATEWAY);
+        this.logger.warn('VoIPmonitor api.php returned non-binary response', {
+          task,
+          params,
+          message: message.slice(0, 500),
+        });
+        throw new HttpException(
+          `VoIPmonitor API error (${task}): ${message.slice(0, 500)}`,
+          HttpStatus.BAD_GATEWAY,
+        );
       }
 
       return { data: buffer, contentType };
@@ -661,7 +729,9 @@ export class VoipmonitorService {
     cidMerge?: boolean;
   }): Promise<{ data: Buffer; contentType: string }> {
     if (!params.cdrId && !params.callId) {
-      throw new BadRequestException('cdrId or callId is required to fetch voice recording');
+      throw new BadRequestException(
+        'cdrId or callId is required to fetch voice recording',
+      );
     }
 
     const apiParams: Record<string, unknown> = {};
@@ -669,7 +739,8 @@ export class VoipmonitorService {
     if (params.callId) apiParams.callId = params.callId;
     if (params.calldate) apiParams.calldate = params.calldate;
     if (params.ogg) apiParams.ogg = true;
-    if (params.cidInterval !== undefined) apiParams.cidInterval = params.cidInterval;
+    if (params.cidInterval !== undefined)
+      apiParams.cidInterval = params.cidInterval;
     if (params.cidMerge !== undefined) apiParams.cidMerge = params.cidMerge;
 
     return this.requestApiBinary('getVoiceRecording', apiParams);
@@ -685,13 +756,16 @@ export class VoipmonitorService {
     disableRtp?: boolean;
   }): Promise<{ data: Buffer; contentType: string }> {
     if (!params.cdrId && !params.callId) {
-      throw new BadRequestException('cdrId or callId is required to fetch PCAP');
+      throw new BadRequestException(
+        'cdrId or callId is required to fetch PCAP',
+      );
     }
 
     const apiParams: Record<string, unknown> = {};
     if (params.cdrId !== undefined) apiParams.cdrId = params.cdrId;
     if (params.callId) apiParams.callId = params.callId;
-    if (params.cidInterval !== undefined) apiParams.cidInterval = params.cidInterval;
+    if (params.cidInterval !== undefined)
+      apiParams.cidInterval = params.cidInterval;
     if (params.cidMerge !== undefined) apiParams.cidMerge = params.cidMerge;
     if (params.zip) apiParams.zip = true;
     if (params.disableRtp) apiParams.disable_rtp = true;

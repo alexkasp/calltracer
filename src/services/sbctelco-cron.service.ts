@@ -78,6 +78,31 @@ export class SbctelcoCronService {
     }
   }
 
+  /**
+   * Каждые 5 минут: забрать из VoIPmonitor звонки, отклонённые SBC из-за ненайденного маршрута.
+   * Через SBCtelco их не получить — при отказе маршрутизации SBC трейс не создаёт вообще.
+   * Окно берём с запасом (30 минут при шаге 5), CDR могут появляться в VoIPmonitor с задержкой;
+   * повторы безопасны, запись идёт по стабильному id vm:<call_id>.
+   */
+  @Cron('*/5 * * * *')
+  async handleNoRouteImport() {
+    const enabled = this.configService.get<string>('SBC_CRON_FETCH_ENABLED');
+    if (enabled === 'false' || enabled === '0') return;
+    try {
+      const { candidates, imported, skippedHavingTrace } =
+        await this.sbctelcoService.importNoRouteCallsFromVoipmonitor(30);
+      if (imported > 0) {
+        this.logger.log(
+          `Sbctelco cron (NoRoute): кандидатов ${candidates}, импортировано ${imported}, пропущено (трейс есть) ${skippedHavingTrace}`,
+        );
+      }
+    } catch (err: any) {
+      this.logger.warn('Sbctelco cron (NoRoute): ошибка', {
+        message: err?.message,
+      });
+    }
+  }
+
   /** Раз в сутки (3:00): удалить из sbctrace звонки старше 5 дней */
   @Cron('0 3 * * *')
   async handleDeleteOlderThanFiveDays() {

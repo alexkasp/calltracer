@@ -40,6 +40,15 @@ export class Sbctrace {
   @Column({ type: 'boolean', default: false, name: 'no_route' })
   noRoute: boolean;
 
+  /**
+   * Откуда получена запись: 'sbc' — трейс из SBCtelco call_trace (обычный путь),
+   * 'voipmonitor' — восстановлено из CDR VoIPmonitor. Второй источник нужен потому, что при
+   * ненайденном маршруте SBC отвечает 404 и трейс НЕ создаёт вообще (проверено по номеру,
+   * временному окну и SIP Call-ID) — такие звонки видит только VoIPmonitor.
+   */
+  @Column({ type: 'varchar', length: 16, default: 'sbc' })
+  source: string;
+
   @Column({
     type: 'varchar',
     length: 64,

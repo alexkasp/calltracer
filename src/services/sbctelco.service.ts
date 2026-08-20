@@ -7,6 +7,7 @@ import { Sbctrace } from '../entities/sbctrace.entity';
 import { TelegramNotifyService } from './telegram-notify.service';
 import { parseMosFromCallData } from '../utils/sbc-mos';
 import { parseRoutingDecision } from '../utils/sbc-routing';
+import { VoipmonitorService } from './voipmonitor.service';
 
 type SbctelcoCallTraceParams = {
   nb_result?: number;
@@ -53,12 +54,143 @@ export class SbctelcoService {
   private readonly username = process.env.SBCTELCO_USER || 'rouser';
   private readonly password = process.env.SBCTELCO_PASS || 'Ro@Sip4u2025';
 
+  /** Интерфейсы SBC, на которые АТС шлёт вызовы (совпадает с SBC_DST_IPS в CalltraceService). */
+  private readonly sbcDestinationIps = new Set(
+    (process.env.SBC_DST_IPS || '172.21.231.16,172.21.231.17,172.21.231.18')
+      .split(',')
+      .map((ip) => ip.trim())
+      .filter(Boolean),
+  );
+
   constructor(
     private readonly httpService: HttpService,
     @InjectRepository(Sbctrace)
     private readonly sbctraceRepo: Repository<Sbctrace>,
     private readonly telegramNotify: TelegramNotifyService,
+    private readonly voipmonitorService: VoipmonitorService,
   ) {}
+
+  /**
+   * Импорт звонков, отклонённых SBC из-за ненайденного маршрута.
+   *
+   * Зачем отдельный путь: при отказе маршрутизации SBC отвечает 404 и call_trace НЕ создаёт —
+   * проверено по номеру, по временному окну и по SIP Call-ID трёх таких вызовов, везде пусто.
+   * Значит, через SBCtelco их не получить в принципе. Зато их видит VoIPmonitor: он снимает SIP
+   * на стороне АТС и фиксирует и сам INVITE, и ответ 404 от SBC.
+   *
+   * Признак (замерено на 5 днях — 42 таких звонка, ~8 в сутки):
+   *   1) адрес назначения — интерфейс SBC;
+   *   2) последний SIP-ответ 404;
+   *   3) длительность < 1с — отсекает обычные звонки, которые позвонили 20-40 секунд и лишь
+   *      потом получили 404 от абонента дальше по цепочке (их большинство среди 404);
+   *   4) в sbctrace нет записи с таким call_id — подтверждает, что SBC трейс не заводил.
+   * Пункт 4 именно подтверждающий, а не основной: отсутствие трейса бывает и когда наш сбор
+   * лежал (зависал API SBC), поэтому первично отсекаем по 1-3.
+   */
+  async importNoRouteCallsFromVoipmonitor(minutes = 30): Promise<{
+    candidates: number;
+    imported: number;
+    skippedHavingTrace: number;
+  }> {
+    const now = new Date();
+    const from = new Date(now.getTime() - minutes * 60 * 1000);
+    // VoIPmonitor фильтрует по тому же локальному времени ОАЭ (UTC+4), в котором хранит calldate:
+    // звонок 08:40 по Дубаю лежит как "2026-08-20 08:40:20". Если передать UTC, окно уедет на
+    // 4 часа назад и импорт не найдёт ничего.
+    const fmt = (d: Date) =>
+      new Date(d.getTime() + 4 * 60 * 60 * 1000).toISOString().slice(0, 19);
+
+    const response = await this.voipmonitorService.getCalls({
+      limit: 200,
+      start: 0,
+      fdatefrom: fmt(from),
+      fdateto: fmt(now),
+      fsipresponse: '404',
+      fdurationlt: 1,
+    });
+
+    const candidates = (response?.results || []).filter((r: any) =>
+      this.sbcDestinationIps.has(r?.sipcalledip),
+    );
+    if (candidates.length === 0)
+      return { candidates: 0, imported: 0, skippedHavingTrace: 0 };
+
+    const callIds = candidates
+      .map((r: any) => String(r.fbasename || r.callid || ''))
+      .filter(Boolean);
+    const traced = callIds.length
+      ? await this.sbctraceRepo
+          .createQueryBuilder('s')
+          .select('s.call_id', 'callId')
+          .where('s.call_id IN (:...ids)', { ids: callIds })
+          .getRawMany<{ callId: string }>()
+      : [];
+    const tracedSet = new Set(traced.map((t) => t.callId));
+
+    let imported = 0;
+    let skippedHavingTrace = 0;
+    const fresh: Array<{ callId: string; calling: string; called: string }> =
+      [];
+
+    for (const cdr of candidates) {
+      const callId = String(cdr.fbasename || cdr.callid || '');
+      if (!callId) continue;
+      if (tracedSet.has(callId)) {
+        skippedHavingTrace += 1;
+        continue;
+      }
+      // Отдельное пространство id, чтобы не пересечься с трейсами SBC (leg:0x...)
+      const recordId = `vm:${callId}`.slice(0, 64);
+      try {
+        const existing = await this.sbctraceRepo.findOne({
+          where: { id: recordId },
+        });
+        const entity = existing ?? this.sbctraceRepo.create({ id: recordId });
+        const calldate = cdr.calldate
+          ? new Date(String(cdr.calldate).replace(' ', 'T'))
+          : null;
+        entity.payload = { '***voipmonitor-cdr***': cdr };
+        entity.callId = callId;
+        entity.legId = null;
+        entity.calling = cdr.caller != null ? String(cdr.caller) : null;
+        entity.called = cdr.called != null ? String(cdr.called) : null;
+        entity.callState = 'Inactive';
+        entity.terminateReason = '404_NO_ROUTE_ON_SBC';
+        entity.callTimestamp =
+          calldate && !Number.isNaN(calldate.getTime()) ? calldate : null;
+        entity.connectTimestamp = null;
+        entity.endTimestamp = entity.callTimestamp;
+        entity.callDurationSec = 0;
+        entity.talkDurationSec = 0;
+        entity.lastSeenAt = new Date();
+        entity.mos = null;
+        entity.noRoute = true;
+        entity.source = 'voipmonitor';
+        await this.saveTraceEntity(entity);
+        if (!existing) {
+          imported += 1;
+          fresh.push({
+            callId,
+            calling: String(cdr.caller ?? ''),
+            called: String(cdr.called ?? ''),
+          });
+        }
+      } catch (e: any) {
+        this.logger.warn('Sbctrace: не удалось импортировать no-route звонок', {
+          callId,
+          message: e?.message,
+        });
+      }
+    }
+
+    if (fresh.length > 0) {
+      this.logger.log(
+        `Sbctrace: импортировано ${fresh.length} звонков без маршрута (404 от SBC)`,
+        { calls: fresh },
+      );
+    }
+    return { candidates: candidates.length, imported, skippedHavingTrace };
+  }
 
   async getCallTrace(params: SbctelcoCallTraceParams) {
     const {
