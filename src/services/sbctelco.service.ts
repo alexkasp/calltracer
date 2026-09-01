@@ -32,12 +32,58 @@ const ID_DEDUP_WINDOW_MINUTES = 15;
 const FETCH_WINDOW_MS = FETCH_WINDOW_MINUTES * 60 * 1000;
 const ID_DEDUP_WINDOW_MS = ID_DEDUP_WINDOW_MINUTES * 60 * 1000;
 
+/** Целочисленная настройка из .env с дефолтом и ограничением диапазона. */
+function envInt(name: string, def: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw == null || String(raw).trim() === '') return def;
+  const n = Number(String(raw).trim());
+  if (!Number.isFinite(n)) return def;
+  return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 @Injectable()
 export class SbctelcoService {
   private readonly logger = new Logger(SbctelcoService.name);
 
   /** Лимит звонков при запросе за последние 2 минуты (крон и fetch-and-save) */
   readonly fetchLimit = SBC_FETCH_LIMIT;
+
+  // Запросы call_trace с recursive=yes дорогие: WebPortal SBC (tbweb/ruby) однопоточный
+  // и собирает полный SIP-трейс по каждому звонку. Поэтому кроновые заборы ограничены
+  // по числу страниц, по общему времени и разнесены паузой между страницами.
+
+  /** Максимум страниц за один прогон пагинации. */
+  readonly maxPages = envInt('SBC_FETCH_MAX_PAGES', 20, 1, 100);
+  /** Пауза между страницами (мс) — даёт WebPortal передышку. */
+  readonly pagePauseMs = envInt('SBC_FETCH_PAGE_PAUSE_MS', 250, 0, 5000);
+  /** Таймаут одного кронового запроса (мс); 0 — дефолт HttpModule. */
+  readonly cronTimeoutMs = envInt('SBC_CRON_HTTP_TIMEOUT_MS', 0, 0, 300000);
+  /** Бюджет времени на прогон Active snapshot (мс) — меньше периода крона (1 мин). */
+  readonly activeDeadlineMs = envInt(
+    'SBC_CRON_ACTIVE_DEADLINE_MS',
+    50000,
+    5000,
+    600000,
+  );
+  /** Бюджет времени на прогон Inactive overlap (мс) — меньше периода крона (5 мин). */
+  readonly inactiveDeadlineMs = envInt(
+    'SBC_CRON_INACTIVE_DEADLINE_MS',
+    240000,
+    5000,
+    900000,
+  );
+  /** Перекрытие окна inactive (мс): страховка от расхождения часов и «поздних» записей. */
+  private readonly inactiveOverlapMs =
+    envInt('SBC_INACTIVE_OVERLAP_SEC', 60, 0, 900) * 1000;
+  /** Максимальная ширина окна inactive (мс): ограничивает догон после простоя. */
+  private readonly inactiveMaxWindowMs =
+    envInt('SBC_INACTIVE_MAX_WINDOW_MIN', FETCH_WINDOW_MINUTES, 5, 120) *
+    60 *
+    1000;
+  /** Конец последнего полностью вычитанного окна inactive (для адаптивного start). */
+  private lastInactiveEnd: Date | null = null;
 
   private readonly MOS_ALERT_THRESHOLD = (() => {
     const v = String(process.env.SBC_MOS_ALERT_THRESHOLD ?? '4')
@@ -59,7 +105,10 @@ export class SbctelcoService {
     private readonly telegramNotify: TelegramNotifyService,
   ) {}
 
-  async getCallTrace(params: SbctelcoCallTraceParams) {
+  async getCallTrace(
+    params: SbctelcoCallTraceParams,
+    opts?: { timeoutMs?: number },
+  ) {
     const {
       nb_result = 2,
       page,
@@ -111,6 +160,7 @@ export class SbctelcoService {
             'Content-Type': 'application/json',
             Accept: 'application/json',
           },
+          ...(opts?.timeoutMs ? { timeout: opts.timeoutMs } : {}),
         }),
       );
 
@@ -227,7 +277,30 @@ export class SbctelcoService {
     return this.formatStartParamUtc4(new Date(Date.now() - FETCH_WINDOW_MS));
   }
 
-  /** Параметры start/end для overlap-окна за последние 15 минут (UTC+4). */
+  /**
+   * Окно для кронового забора Inactive: от конца прошлого полностью вычитанного окна
+   * (минус перекрытие) до «сейчас». В установившемся режиме это ~период крона + перекрытие
+   * (по умолчанию ~6 минут вместо фиксированных 15), то есть в разы меньше повторных
+   * recursive=yes выборок одних и тех же звонков. Если прогон был пропущен или оборван,
+   * окно само расширяется и звонки не теряются; сверху оно ограничено inactiveMaxWindowMs,
+   * чтобы догон после простоя не превратился в один гигантский запрос к SBC.
+   */
+  private getInactiveWindow(now: Date): { start: string; end: string } {
+    const nowMs = now.getTime();
+    const floorMs = nowMs - this.inactiveMaxWindowMs;
+    const startMs = this.lastInactiveEnd
+      ? Math.max(
+          floorMs,
+          this.lastInactiveEnd.getTime() - this.inactiveOverlapMs,
+        )
+      : Math.max(floorMs, nowMs - FETCH_WINDOW_MS);
+    return {
+      start: this.formatStartParamUtc4(new Date(startMs)),
+      end: this.formatStartParamUtc4(now),
+    };
+  }
+
+  /** @deprecated Используйте getInactiveWindow. Параметры start/end за последние 15 минут (UTC+4). */
   getStartEndParamsLastFifteenMinutes(): { start: string; end: string } {
     return {
       start: this.formatStartParamUtc4(new Date(Date.now() - FETCH_WINDOW_MS)),
@@ -281,11 +354,14 @@ export class SbctelcoService {
     saved: number;
     ids: string[];
   }> {
-    const raw = await this.getCallTraceAllPages({
-      nb_result: this.fetchLimit,
-      recursive: 'yes',
-      call_state: 'Active',
-    });
+    const { raw } = await this.getCallTraceAllPages(
+      {
+        nb_result: this.fetchLimit,
+        recursive: 'yes',
+        call_state: 'Active',
+      },
+      { deadlineAt: Date.now() + this.activeDeadlineMs },
+    );
     return this.saveTracesFromResponse(raw, {
       defaultState: 'Active',
       notifyLowMos: false,
@@ -297,15 +373,23 @@ export class SbctelcoService {
     added: number;
     ids: string[];
   }> {
-    const { start, end } = this.getStartEndParamsLastFifteenMinutes();
-    const raw = await this.getCallTraceAllPages({
-      nb_result: this.fetchLimit,
-      recursive: 'yes',
-      start,
-      end,
-      call_state: 'Inactive',
-    });
-    return this.filterAndSaveByRecentIds(raw, 'Inactive');
+    const now = new Date();
+    const { start, end } = this.getInactiveWindow(now);
+    const { raw, truncated } = await this.getCallTraceAllPages(
+      {
+        nb_result: this.fetchLimit,
+        recursive: 'yes',
+        start,
+        end,
+        call_state: 'Inactive',
+      },
+      { deadlineAt: Date.now() + this.inactiveDeadlineMs },
+    );
+    const result = await this.filterAndSaveByRecentIds(raw, 'Inactive');
+    // Окно двигаем только если страницы вычитаны полностью: иначе следующий прогон
+    // должен перебрать тот же интервал, а не потерять звонки.
+    if (!truncated) this.lastInactiveEnd = now;
+    return result;
   }
 
   /**
@@ -335,12 +419,15 @@ export class SbctelcoService {
   private async fetchAndSaveNewCallsFromStart(
     start: string,
   ): Promise<{ added: number; ids: string[] }> {
-    const raw = await this.getCallTraceAllPages({
-      nb_result: this.fetchLimit,
-      recursive: 'yes',
-      start,
-      call_state: 'Inactive',
-    });
+    const { raw } = await this.getCallTraceAllPages(
+      {
+        nb_result: this.fetchLimit,
+        recursive: 'yes',
+        start,
+        call_state: 'Inactive',
+      },
+      { deadlineAt: Date.now() + this.inactiveDeadlineMs },
+    );
     return this.filterAndSaveByRecentIds(raw, 'Inactive');
   }
 
@@ -371,24 +458,60 @@ export class SbctelcoService {
     return { added: saved, ids };
   }
 
-  /** Считывает все страницы call_trace (page=1..N), пока размер страницы == nb_result. */
+  /**
+   * Считывает страницы call_trace (page=1..N), пока размер страницы == nb_result.
+   * Прогон ограничен дедлайном и maxPages: без этого один запуск мог занять до
+   * maxPages × таймаут запроса и продолжать долбить WebPortal SBC уже после того,
+   * как по расписанию должен был начаться следующий.
+   * truncated=true означает, что данные вычитаны не полностью.
+   */
   private async getCallTraceAllPages(
     baseParams: SbctelcoCallTraceParams,
-  ): Promise<Record<string, unknown>> {
+    opts?: { deadlineAt?: number },
+  ): Promise<{
+    raw: Record<string, unknown>;
+    truncated: boolean;
+    pages: number;
+  }> {
     const limit = baseParams.nb_result ?? this.fetchLimit;
     const merged: Record<string, unknown> = {};
     let page = 1;
+    let truncated = false;
     while (true) {
-      const raw = await this.getCallTrace({ ...baseParams, page });
+      const raw = await this.getCallTrace(
+        { ...baseParams, page },
+        { timeoutMs: this.cronTimeoutMs || undefined },
+      );
       if (page === 1 && raw?.['***meta***'] != null)
         merged['***meta***'] = raw['***meta***'];
       const callKeys = Object.keys(raw).filter((k) => k !== '***meta***');
       for (const key of callKeys) merged[key] = raw[key];
       if (callKeys.length < limit) break;
+      if (page >= this.maxPages) {
+        truncated = true;
+        this.logger.warn('SBCtelco call_trace: достигнут лимит страниц', {
+          pages: page,
+          maxPages: this.maxPages,
+          call_state: baseParams.call_state,
+        });
+        break;
+      }
+      if (opts?.deadlineAt != null && Date.now() >= opts.deadlineAt) {
+        truncated = true;
+        this.logger.warn(
+          'SBCtelco call_trace: исчерпан бюджет времени прогона',
+          {
+            pages: page,
+            call_state: baseParams.call_state,
+          },
+        );
+        break;
+      }
       page += 1;
-      if (page > 100) break;
+      // Пауза между страницами: WebPortal SBC однопоточный, recursive=yes — дорогие запросы.
+      if (this.pagePauseMs > 0) await sleep(this.pagePauseMs);
     }
-    return merged;
+    return { raw: merged, truncated, pages: page };
   }
 
   /**

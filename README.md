@@ -50,8 +50,15 @@ mysql -h<MANAGER_DB_HOST> -u<MANAGER_DB_USERNAME> -p sbclogs -e \
 | Расписание | Что делает |
 |------------|------------|
 | **Каждую минуту** (`* * * * *`) | Active snapshot: `call_state=Active`, `recursive=yes`, `nb_result=1000` (+ пагинация по `page`) — обновляет/сохраняет текущие активные звонки по ключу `leg_id/call_id`. |
-| **Каждые 5 минут** (`*/5 * * * *`) | Inactive overlap: окно `start=now-15m`, `end=now`, `call_state=Inactive`, `recursive=yes`, `nb_result=1000` (+ пагинация). В `sbctrace` сохраняются id, которых не было за последние **15 минут**; для существующих `leg_id/call_id` выполняется update и перевод в завершённые. При `MOS < 4` отправляется Telegram-отчёт. |
+| **Каждые 5 минут** (`2-59/5 * * * *`, со смещением на `:02`) | Inactive overlap: **адаптивное окно** `start` = конец прошлого полностью вычитанного окна минус `SBC_INACTIVE_OVERLAP_SEC`, `end=now` (в установившемся режиме ~6 мин; после пропуска прогона расширяется само, сверху ограничено `SBC_INACTIVE_MAX_WINDOW_MIN`), `call_state=Inactive`, `recursive=yes`, `nb_result=1000` (+ пагинация). В `sbctrace` сохраняются id, которых не было за последние **15 минут**; для существующих `leg_id/call_id` выполняется update и перевод в завершённые. При `MOS < 4` отправляется Telegram-отчёт. |
 | **Раз в сутки в 03:00** (`0 3 * * *`) | Удаление из `sbctrace` записей **старше 5 дней** (очистка истории). |
+
+**Ограничение нагрузки на SBC.** WebPortal SBC (`tbweb`/ruby) однопоточный, а `call_trace` с `recursive=yes` — дорогой запрос: по каждому звонку собирается полный SIP-трейс. Поэтому:
+
+- Оба забора (Active и Inactive) делят **общий замок**: одновременно в SBC не ходим никогда, а если прогон не уложился в свой период — следующий тик пропускается с `warn` в логе, вместо того чтобы наслаиваться.
+- Пагинация ограничена по числу страниц (`SBC_FETCH_MAX_PAGES`) и по общему времени прогона (`SBC_CRON_ACTIVE_DEADLINE_MS` / `SBC_CRON_INACTIVE_DEADLINE_MS`); между страницами выдерживается пауза `SBC_FETCH_PAGE_PAUSE_MS`.
+- Если окно Inactive вычитано не полностью (лимит страниц или дедлайн), точка `start` **не сдвигается** — следующий прогон переберёт тот же интервал, звонки не теряются.
+- Кроны живут в процессе приложения, поэтому PM2 должен запускать сервис **в одном инстансе** (`instances: 1`, не `cluster` с N > 1): каждый инстанс держит свой замок и будет опрашивать SBC независимо.
 
 При ручном сохранении ответа `call_trace` (`save=1`) в JSON при `Accept: application/json` или `format=json` дополнительно: **`_saved`**, **`_savedIds`**, **`_lowMosCount`** (сколько сохранённых строк с **MOS < 4**; Telegram уходит, если таких хотя бы одна).
 
@@ -136,7 +143,14 @@ mysql -h<MANAGER_DB_HOST> -u<MANAGER_DB_USERNAME> -p sbclogs -e \
 - `CONVOLO_API_KEY` — ключ API Convolo (логи и мониторинг).
 - `CALL_MONITOR_CRON_ENABLED` — включение крона мониторинга.
 - `CALL_MONITOR_TELEGRAM_ALERTS_ENABLED` — включение Telegram-алертов от Call Monitor (по умолчанию `true`; `false/0/off/no` выключает).
-- `SBC_CRON_FETCH_ENABLED`, `SBC_FETCH_OTHER_LEG` — SBCtelco и вывод второй ноги.
+- `SBC_CRON_FETCH_ENABLED`, `SBC_FETCH_OTHER_LEG` — SBCtelco и вывод второй ноги. `SBC_CRON_FETCH_ENABLED=false` полностью останавливает оба забора из SBC (аварийный выключатель).
+- Ограничение нагрузки на SBC (все опциональны, значения по умолчанию в скобках):
+  - `SBC_FETCH_MAX_PAGES` (`20`) — максимум страниц за прогон пагинации.
+  - `SBC_FETCH_PAGE_PAUSE_MS` (`250`) — пауза между страницами.
+  - `SBC_CRON_ACTIVE_DEADLINE_MS` (`50000`) / `SBC_CRON_INACTIVE_DEADLINE_MS` (`240000`) — бюджет времени на один прогон.
+  - `SBC_CRON_HTTP_TIMEOUT_MS` (`0` — дефолт `HttpModule`, 20 с) — таймаут одного кронового запроса.
+  - `SBC_INACTIVE_OVERLAP_SEC` (`60`) — перекрытие окна Inactive.
+  - `SBC_INACTIVE_MAX_WINDOW_MIN` (`15`) — потолок ширины окна Inactive при догоне после простоя.
 - `SBC_MOS_ALERT_THRESHOLD` — порог MOS для алертов по `sbctrace` (по умолчанию `4`; алерт, если MOS < порога).
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` — Telegram; опционально `TELEGRAM_CHAT_ID_ALERTS`, `TELEGRAM_CHAT_ID_REPORTS`.
 - Параметры алертов и EMA: `CALL_MONITOR_ALERT_*`, `CALL_MONITOR_EMA_*` и др. (см. код `CallMonitorService`).
